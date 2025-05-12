@@ -751,8 +751,78 @@ public final class DiscordManager: ObservableObject {
 				return
 			}
 
-			// Rest of auth flow using codeCopy and uriCopy
-			// ...existing code...
+			if !Discord_ClientResult_Successful(result) {
+				var errorStr = Discord_String()
+				Discord_ClientResult_Error(result, &errorStr)
+				if let errorPtr = errorStr.ptr,
+					let messageStr = String(
+						bytes: UnsafeRawBufferPointer(
+							start: errorPtr,
+							count: Int(errorStr.size)
+						),
+						encoding: .utf8
+					)
+				{
+					manager.handleError("Authentication Error: \(messageStr)")
+				} else {
+					manager.handleError("Authentication failed with unknown error")
+				}
+				return
+			}
+
+			guard var verifier = manager.verifier else {
+				manager.handleError("❌ Authentication Error: No verifier available")
+				return
+			}
+
+			var verifierStr = Discord_String()
+			Discord_AuthorizationCodeVerifier_Verifier(&verifier, &verifierStr)
+
+			// Create static token callback to avoid self reference
+			let tokenCallback: Discord_Client_TokenExchangeCallback = {
+				result, token, refreshToken, tokenType, expiresIn, scope, userData in
+				guard let userData = userData else { return }
+				let manager = Unmanaged<DiscordManager>.fromOpaque(userData).takeUnretainedValue()
+
+				let tokenCopy = token
+				let refreshCopy = refreshToken
+				let expiresInCopy = expiresIn
+
+				if let tokenPtr = tokenCopy.ptr,
+					let refreshPtr = refreshCopy.ptr,
+					let tokenStr = String(
+						bytes: UnsafeRawBufferPointer(start: tokenPtr, count: Int(tokenCopy.size)),
+						encoding: .utf8),
+					let refreshStr = String(
+						bytes: UnsafeRawBufferPointer(
+							start: refreshPtr, count: Int(refreshCopy.size)),
+						encoding: .utf8)
+				{
+
+					Task { @MainActor in
+						await manager.updateStoredToken(
+							accessToken: tokenStr,
+							refreshToken: refreshStr,
+							expiresIn: TimeInterval(expiresInCopy)
+						)
+
+						let accessStr = manager.makeDiscordString(from: tokenStr)
+						Discord_Client_UpdateToken(
+							manager.client,
+							Discord_AuthorizationTokenType_Bearer,
+							accessStr,
+							{ _, userData in
+								guard let userData = userData else { return }
+								let manager = Unmanaged<DiscordManager>.fromOpaque(userData)
+									.takeUnretainedValue()
+								Discord_Client_Connect(manager.client)
+							},
+							nil,
+							userData
+						)
+					}
+				}
+			}
 
 			Discord_Client_GetToken(
 				manager.client,
