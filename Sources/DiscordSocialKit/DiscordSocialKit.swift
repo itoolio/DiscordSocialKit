@@ -13,7 +13,8 @@ import discord_partner_sdk
 
 @MainActor
 public final class DiscordManager: ObservableObject {
-	private var client: UnsafeMutablePointer<Discord_Client>?
+	// Mark properties as @MainActor isolated
+	@MainActor private var client: UnsafeMutablePointer<Discord_Client>?
 	private var applicationId: UInt64
 	private var verifier: Discord_AuthorizationCodeVerifier?
 	private var modelContext: ModelContext?
@@ -56,7 +57,7 @@ public final class DiscordManager: ObservableObject {
 		}
 	}
 
-	private var updateTimer: Timer?
+	@MainActor private var updateTimer: Timer?
 	private var lastId: String = ""
 	private var lastTitle: String = ""
 	private var lastArtist: String = ""
@@ -694,6 +695,9 @@ public final class DiscordManager: ObservableObject {
 		result, token, refreshToken, tokenType, expiresIn, scope, userData in
 		let manager = Unmanaged<DiscordManager>.fromOpaque(userData!).takeUnretainedValue()
 
+		// Create local copy of userData
+		let localUserData = userData
+
 		if let tokenPtr = token.ptr,
 			let refreshPtr = refreshToken.ptr,
 			let tokenStr = String(
@@ -703,7 +707,6 @@ public final class DiscordManager: ObservableObject {
 				bytes: UnsafeRawBufferPointer(start: refreshPtr, count: Int(refreshToken.size)),
 				encoding: .utf8)
 		{
-
 			print("🎟️ Received new token from Discord")
 			Task { @MainActor in
 				await manager.updateStoredToken(
@@ -713,10 +716,11 @@ public final class DiscordManager: ObservableObject {
 				)
 
 				let accessStr = manager.makeDiscordString(from: tokenStr)
+				let localToken = accessStr  // Create local copy
 				Discord_Client_UpdateToken(
 					manager.client,
 					Discord_AuthorizationTokenType_Bearer,
-					accessStr,
+					localToken,
 					{ result, userData in
 						let manager = Unmanaged<DiscordManager>.fromOpaque(userData!)
 							.takeUnretainedValue()
@@ -724,11 +728,9 @@ public final class DiscordManager: ObservableObject {
 						Discord_Client_Connect(manager.client)
 					},
 					nil,
-					userData
+					localUserData
 				)
 			}
-		} else {
-			print("❌ Failed to parse token data from Discord")
 		}
 	}
 
@@ -824,12 +826,11 @@ public final class DiscordManager: ObservableObject {
 		)
 	}
 
+	@MainActor
 	deinit {
-		// Stop timer synchronously
 		updateTimer?.invalidate()
 		updateTimer = nil
 
-		// Clear state
 		currentPlaybackInfo = nil
 		lastTitle = ""
 		lastArtist = ""
@@ -837,9 +838,7 @@ public final class DiscordManager: ObservableObject {
 		lastDuration = 0
 		lastCurrentTime = 0
 
-		// Clear client
 		if let client = client {
-			// Basic presence clear without callback
 			var activity = Discord_Activity()
 			Discord_Activity_Init(&activity)
 			Discord_Client_UpdateRichPresence(client, &activity, nil, nil, nil)
