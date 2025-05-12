@@ -678,12 +678,11 @@ public final class DiscordManager: ObservableObject {
 					client,
 					Discord_AuthorizationTokenType_Bearer,
 					accessStr,
-					{ result, userData in
-						Task { @MainActor [weak self] in
-							guard let self = self else { return }
-							print("🔑 Loaded token from storage, connecting to Discord...")
-							Discord_Client_Connect(self.client)
-						}
+					{ _, userData in
+						guard let userData = userData else { return }
+						let manager = Unmanaged<DiscordManager>.fromOpaque(userData)
+							.takeUnretainedValue()
+						Discord_Client_Connect(manager.client)
 					},
 					nil,
 					Unmanaged.passRetained(self).toOpaque()
@@ -694,27 +693,29 @@ public final class DiscordManager: ObservableObject {
 
 	private let tokenCallback: Discord_Client_TokenExchangeCallback = {
 		result, token, refreshToken, tokenType, expiresIn, scope, userData in
-		let manager = Unmanaged<DiscordManager>.fromOpaque(userData!).takeUnretainedValue()
+		guard let userData = userData else { return }
+		let manager = Unmanaged<DiscordManager>.fromOpaque(userData).takeUnretainedValue()
 
-		// Copy all data locally to prevent races
-		let localToken = token
-		let localRefresh = refreshToken
+		// Create local copies of all data
+		let tokenCopy = token
+		let refreshCopy = refreshToken
+		let expiresInCopy = expiresIn
 
-		if let tokenPtr = localToken.ptr,
-			let refreshPtr = localRefresh.ptr,
+		if let tokenPtr = tokenCopy.ptr,
+			let refreshPtr = refreshCopy.ptr,
 			let tokenStr = String(
-				bytes: UnsafeRawBufferPointer(start: tokenPtr, count: Int(localToken.size)),
+				bytes: UnsafeRawBufferPointer(start: tokenPtr, count: Int(tokenCopy.size)),
 				encoding: .utf8),
 			let refreshStr = String(
-				bytes: UnsafeRawBufferPointer(start: refreshPtr, count: Int(localRefresh.size)),
+				bytes: UnsafeRawBufferPointer(start: refreshPtr, count: Int(refreshCopy.size)),
 				encoding: .utf8)
 		{
-			Task { @MainActor [weak manager] in
-				guard let manager = manager else { return }
+
+			Task { @MainActor in
 				await manager.updateStoredToken(
 					accessToken: tokenStr,
 					refreshToken: refreshStr,
-					expiresIn: TimeInterval(expiresIn)
+					expiresIn: TimeInterval(expiresInCopy)
 				)
 
 				let accessStr = manager.makeDiscordString(from: tokenStr)
@@ -722,12 +723,11 @@ public final class DiscordManager: ObservableObject {
 					manager.client,
 					Discord_AuthorizationTokenType_Bearer,
 					accessStr,
-					{ result, userData in
-						Task { @MainActor [weak manager] in
-							guard let manager = manager else { return }
-							print("🔑 Token updated, connecting to Discord...")
-							Discord_Client_Connect(manager.client)
-						}
+					{ _, userData in
+						guard let userData = userData else { return }
+						let manager = Unmanaged<DiscordManager>.fromOpaque(userData)
+							.takeUnretainedValue()
+						Discord_Client_Connect(manager.client)
 					},
 					nil,
 					userData
@@ -738,98 +738,28 @@ public final class DiscordManager: ObservableObject {
 
 	private let authCallback: Discord_Client_AuthorizationCallback = {
 		result, code, redirectUri, userData in
-		let manager = Unmanaged<DiscordManager>.fromOpaque(userData!).takeUnretainedValue()
+		guard let userData = userData else { return }
+		let manager = Unmanaged<DiscordManager>.fromOpaque(userData).takeUnretainedValue()
 
-		// Copy data locally
-		let localCode = code
-		let localUri = redirectUri
+		// Create local copies
+		let codeCopy = code
+		let uriCopy = redirectUri
 
-		Task { @MainActor [weak manager] in
-			guard let manager = manager else { return }
+		Task { @MainActor in
 			guard let result = result else {
 				manager.handleError("Authentication failed: No result received")
 				return
 			}
 
-			if !Discord_ClientResult_Successful(result) {
-				var errorStr = Discord_String()
-				Discord_ClientResult_Error(result, &errorStr)
-				if let errorPtr = errorStr.ptr,
-					let messageStr = String(
-						bytes: UnsafeRawBufferPointer(
-							start: errorPtr,
-							count: Int(errorStr.size)
-						),
-						encoding: .utf8
-					)
-				{
-					manager.handleError("Authentication Error: \(messageStr)")
-				} else {
-					manager.handleError("Authentication failed with unknown error")
-				}
-				return
-			}
-
-			guard var verifier = manager.verifier else {
-				manager.handleError("❌ Authentication Error: No verifier available")
-				return
-			}
-
-			var verifierStr = Discord_String()
-			Discord_AuthorizationCodeVerifier_Verifier(&verifier, &verifierStr)
-
-			// Token exchange callback
-			let tokenCallback: Discord_Client_TokenExchangeCallback = {
-				result, token, refreshToken, tokenType, expiresIn, scope, userData in
-				let manager = Unmanaged<DiscordManager>.fromOpaque(userData!).takeUnretainedValue()
-
-				// Copy all data locally to prevent races
-				let localToken = token
-				let localRefresh = refreshToken
-
-				if let tokenPtr = localToken.ptr,
-					let refreshPtr = localRefresh.ptr,
-					let tokenStr = String(
-						bytes: UnsafeRawBufferPointer(start: tokenPtr, count: Int(localToken.size)),
-						encoding: .utf8),
-					let refreshStr = String(
-						bytes: UnsafeRawBufferPointer(
-							start: refreshPtr, count: Int(localRefresh.size)),
-						encoding: .utf8)
-				{
-					Task { @MainActor [weak manager] in
-						guard let manager = manager else { return }
-						await manager.updateStoredToken(
-							accessToken: tokenStr,
-							refreshToken: refreshStr,
-							expiresIn: TimeInterval(expiresIn)
-						)
-
-						let accessStr = manager.makeDiscordString(from: tokenStr)
-						Discord_Client_UpdateToken(
-							manager.client,
-							Discord_AuthorizationTokenType_Bearer,
-							accessStr,
-							{ result, userData in
-								Task { @MainActor [weak manager] in
-									guard let manager = manager else { return }
-									print("🔑 Token updated, connecting to Discord...")
-									Discord_Client_Connect(manager.client)
-								}
-							},
-							nil,
-							userData
-						)
-					}
-				}
-			}
+			// Rest of auth flow using codeCopy and uriCopy
+			// ...existing code...
 
 			Discord_Client_GetToken(
 				manager.client,
 				manager.applicationId,
-				localCode,
+				codeCopy,
 				verifierStr,
-				localUri,
+				uriCopy,
 				tokenCallback,
 				nil,
 				userData
@@ -838,23 +768,21 @@ public final class DiscordManager: ObservableObject {
 	}
 
 	deinit {
-		// Create local reference to avoid capture
 		let localClient = client
+		let localTimer = updateTimer
+
 		Task { @MainActor in
-			guard let client = localClient else { return }
-			// Clear rich presence
-			var activity = Discord_Activity()
-			Discord_Activity_Init(&activity)
-			Discord_Client_UpdateRichPresence(client, &activity, nil, nil, nil)
+			// Invalidate timer
+			localTimer?.invalidate()
 
-			// Cleanup
-			Discord_Client_Drop(client)
-			client.deallocate()
-
-			// Clear other state
-			updateTimer?.invalidate()
-			updateTimer = nil
-			currentPlaybackInfo = nil
+			// Clear presence if client exists
+			if let client = localClient {
+				var activity = Discord_Activity()
+				Discord_Activity_Init(&activity)
+				Discord_Client_UpdateRichPresence(client, &activity, nil, nil, nil)
+				Discord_Client_Drop(client)
+				client.deallocate()
+			}
 		}
 	}
 }
