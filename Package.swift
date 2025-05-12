@@ -22,10 +22,10 @@ let package = Package(
             name: "DiscordSocialKit",
             dependencies: [
                 "MusadoraKit",
-                "DiscordPartnerSDK"
+                "discord_partner_sdk"
             ]),
         .binaryTarget(
-            name: "DiscordPartnerSDK",
+            name: "discord_partner_sdk",
             path: "Frameworks/discord_partner_sdk.xcframework"
         ),
         .testTarget(
