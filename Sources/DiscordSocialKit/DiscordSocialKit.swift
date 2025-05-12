@@ -827,7 +827,7 @@ public final class DiscordManager: ObservableObject {
 	}
 
 	@MainActor
-	deinit {
+	private func cleanup() {
 		updateTimer?.invalidate()
 		updateTimer = nil
 
@@ -845,6 +845,12 @@ public final class DiscordManager: ObservableObject {
 
 			Discord_Client_Drop(client)
 			client.deallocate()
+		}
+	}
+
+	deinit {
+		Task { @MainActor in
+			await cleanup()
 		}
 	}
 }
