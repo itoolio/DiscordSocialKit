@@ -838,59 +838,41 @@ public final class DiscordManager: ObservableObject {
 		)
 	}
 
-	@MainActor
-	private func cleanup() {
-		// Stop timer synchronously
-		updateTimer?.invalidate()
-		updateTimer = nil
+	/// Call this method to manually release resources
+	public func shutdown() {
+		Task { @MainActor in
+			// Stop timer synchronously
+			updateTimer?.invalidate()
+			updateTimer = nil
 
-		// Clear state
-		currentPlaybackInfo = nil
-		lastTitle = ""
-		lastArtist = ""
-		lastArtwork = nil
-		lastDuration = 0
-		lastCurrentTime = 0
+			// Clear state
+			currentPlaybackInfo = nil
+			lastTitle = ""
+			lastArtist = ""
+			lastArtwork = nil
+			lastDuration = 0
+			lastCurrentTime = 0
 
-		// Use the thread-safe client cleanup
-		cleanupClient()
+			// Clear presence and clean up client
+			clearRichPresence()
+		}
 	}
 
-	/// Thread-safe method to clean up Discord client resources
-	/// Safe to call from any context - deinit or MainActor
-	private func cleanupClient() {
-		// Thread-safe get and clear
+	deinit {
+		// Basic cleanup that's safe to do in deinit
 		clientLock.lock()
 		let clientToCleanup = _client
 		_client = nil
 		clientLock.unlock()
 		
-		// Clean up the client if we had one
 		if let clientToCleanup = clientToCleanup {
-			// Basic presence clear without callback
+			// Clear presence without callback
 			var activity = Discord_Activity()
 			Discord_Activity_Init(&activity)
 			Discord_Client_UpdateRichPresence(clientToCleanup, &activity, nil, nil, nil)
-
+			
 			Discord_Client_Drop(clientToCleanup)
 			clientToCleanup.deallocate()
-			print("🧹 Discord client resources released")
 		}
-	}
-	
-	/// Call this method to manually release resources before the object is deallocated.
-	/// While not strictly required (deinit will handle client cleanup), 
-	/// calling this method is recommended for proper cleanup of timers and Discord state.
-	/// The client will automatically clear most resources during deallocation.
-	public func shutdown() {
-		Task { @MainActor in
-			cleanup()
-		}
-	}
-
-	deinit {
-		// Thread-safe cleanup that can be called from any context
-		cleanupClient()
-		print("🧹 Discord manager deallocated")
 	}
 }
