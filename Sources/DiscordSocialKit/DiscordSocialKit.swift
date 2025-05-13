@@ -738,27 +738,51 @@ public final class DiscordManager: ObservableObject {
 	private let authCallback: Discord_Client_AuthorizationCallback = {
 		result, code, redirectUri, userData in
 
-		struct CallbackData {
-			let result: UnsafeMutablePointer<Discord_ClientResult>
-			let code: Discord_String
-			let uri: Discord_String
-			let userData: UnsafeMutableRawPointer
+		// Create Sendable wrapper for auth data
+		struct AuthData: Sendable {
+			struct AuthStrings: Sendable {
+				let code: String
+				let uri: String
+			}
+			let resultSuccess: Bool
+			let strings: AuthStrings
+
+			init?(
+				result: UnsafeMutablePointer<Discord_ClientResult>?,
+				code: Discord_String,
+				uri: Discord_String
+			) {
+				guard let result = result else { return nil }
+				self.resultSuccess = Discord_ClientResult_Successful(result)
+
+				// Copy strings to ensure thread safety
+				self.strings = AuthStrings(
+					code: String(
+						bytes: UnsafeRawBufferPointer(
+							start: code.ptr,
+							count: Int(code.size)
+						),
+						encoding: .utf8
+					) ?? "",
+					uri: String(
+						bytes: UnsafeRawBufferPointer(
+							start: uri.ptr,
+							count: Int(uri.size)
+						),
+						encoding: .utf8
+					) ?? ""
+				)
+			}
 		}
 
 		guard let result = result,
-			let userData = userData
+			let userData = userData,
+			let authData = AuthData(result: result, code: code, uri: redirectUri)
 		else { return }
 
-		let data = CallbackData(
-			result: result,
-			code: Discord_String(ptr: code.ptr, size: code.size),
-			uri: Discord_String(ptr: redirectUri.ptr, size: redirectUri.size),
-			userData: userData
-		)
+		let manager = Unmanaged<DiscordManager>.fromOpaque(userData).takeUnretainedValue()
 
-		let manager = Unmanaged<DiscordManager>.fromOpaque(data.userData).takeUnretainedValue()
-
-		Task { @MainActor [weak manager] in
+		Task { @MainActor [weak manager, authData] in
 			guard let manager = manager else { return }
 
 			guard var verifier = manager.verifier else {
@@ -769,20 +793,24 @@ public final class DiscordManager: ObservableObject {
 			var localVerifierStr = Discord_String()
 			Discord_AuthorizationCodeVerifier_Verifier(&verifier, &localVerifierStr)
 
-			if !Discord_ClientResult_Successful(data.result) {
+			if !authData.resultSuccess {
 				manager.handleError("Authentication failed")
 				return
 			}
 
+			// Create Discord strings from copied data
+			var codeStr = manager.makeDiscordString(from: authData.strings.code)
+			var uriStr = manager.makeDiscordString(from: authData.strings.uri)
+
 			Discord_Client_GetToken(
 				manager.client,
 				manager.applicationId,
-				data.code,
+				codeStr,
 				localVerifierStr,
-				data.uri,
+				uriStr,
 				manager.tokenCallback,
 				nil,
-				data.userData
+				userData
 			)
 		}
 	}
@@ -790,10 +818,15 @@ public final class DiscordManager: ObservableObject {
 	deinit {
 		let actor = CleanupActor()
 
-		Task.detached { @MainActor [weak self] in
-			guard let self = self else { return }
-			await actor.prepare(from: self)
-			await actor.cleanup()
+		// Make cleanup task Sendable
+		@Sendable func cleanup() async {
+			await MainActor.run { [weak self] in
+				guard let self = self else { return }
+				await actor.prepare(from: self)
+				await actor.cleanup()
+			}
 		}
+
+		Task.detached(operation: cleanup)
 	}
 }
