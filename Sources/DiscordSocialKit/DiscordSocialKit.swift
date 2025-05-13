@@ -65,7 +65,7 @@ public final class DiscordManager: ObservableObject {
 
 		private var cleanupData: CleanupData?
 
-		nonisolated func prepareCleanup(
+		private nonisolated func prepareCleanup(
 			client: UnsafeMutablePointer<Discord_Client>?,
 			timer: Timer?
 		) -> CleanupData {
@@ -75,8 +75,23 @@ public final class DiscordManager: ObservableObject {
 			)
 		}
 
-		func initialize(_ data: CleanupData) {
+		// Fix access control to be private
+		private func initialize(_ data: CleanupData) {
 			cleanupData = data
+		}
+
+		// Add a public entry point that takes raw values
+		func cleanupResources(
+			clientAddress: UInt?,
+			timerIdentifier: ObjectIdentifier?
+		) async {
+			let data = CleanupData(
+				clientData: clientAddress.map { CleanupData.PointerData(address: $0) },
+				timerId: timerIdentifier
+			)
+
+			self.cleanupData = data
+			await cleanup()
 		}
 
 		func cleanup() async {
@@ -824,23 +839,20 @@ public final class DiscordManager: ObservableObject {
 	}
 
 	deinit {
-		@Sendable func performCleanup(
-			actor: CleanupActor,
-			client: UnsafeMutablePointer<Discord_Client>?,
-			timer: Timer?
-		) async {
-			let data = actor.prepareCleanup(client: client, timer: timer)
-			await actor.initialize(data)
-			await actor.cleanup()
-		}
+		// Extract client address and timer ID in deinit
+		let clientAddress = client.map { UInt(bitPattern: $0) }
+		let timerIdentifier = updateTimer.map { ObjectIdentifier($0) }
 
-		// Create cleanup task
+		// Create actor and schedule cleanup
 		let actor = CleanupActor()
-		Task.detached { [weak self] in
-			await MainActor.run { [weak self] in
-				guard let self = self else { return }
-				await performCleanup(actor: actor, client: self.client, timer: self.updateTimer)
-			}
+
+		// Use a detached task with captured value types
+		Task.detached { [clientAddress, timerIdentifier, actor] in
+			// Pass Sendable value types to the actor
+			await actor.cleanupResources(
+				clientAddress: clientAddress,
+				timerIdentifier: timerIdentifier
+			)
 		}
 	}
 }
