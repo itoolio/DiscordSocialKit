@@ -5,13 +5,11 @@
 //  Created by Adrian Castro on 12/5/25.
 //
 
-
 import Foundation
 import SwiftData
 
 @Model
-public final class DiscordToken {
-	// Remove unique constraint but keep as identifier
+public final class DSKDiscordToken {
 	public var tokenId: String = UUID().uuidString
 	public var accessToken: String?
 	public var refreshToken: String?
@@ -26,7 +24,7 @@ public final class DiscordToken {
 	}
 
 	public var isValid: Bool {
-        guard accessToken != nil else { return false }
+		guard accessToken != nil else { return false }
 		guard let expiresAt = expiresAt else { return false }
 		let timeUntilExpiry = expiresAt.timeIntervalSinceNow
 		let isValid = timeUntilExpiry > 0
