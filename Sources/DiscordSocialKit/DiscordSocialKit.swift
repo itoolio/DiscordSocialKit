@@ -43,12 +43,30 @@ public final class DiscordManager: ObservableObject {
 
 	// Update CleanupActor to be Sendable
 	private actor CleanupActor: Sendable {
-		func cleanup(client: UnsafeMutablePointer<Discord_Client>?, timer: Timer?) async {
-			await MainActor.run {
-				timer?.invalidate()
+		// Store raw values to make them Sendable
+		private struct CleanupContext: Sendable {
+			let clientAddress: UInt?
+			let timerIdentifier: String?
+
+			init(client: UnsafeMutablePointer<Discord_Client>?, timer: Timer?) {
+				self.clientAddress = client.map { UInt(bitPattern: $0) }
+				self.timerIdentifier = timer?.description
+			}
+		}
+
+		func cleanup(_ context: CleanupContext) async {
+			// Handle timer on main thread
+			if let identifier = context.timerIdentifier {
+				await MainActor.run {
+					// Find timer by identifier and invalidate
+					RunLoop.main.allTimers.first { $0.description == identifier }?.invalidate()
+				}
 			}
 
-			if let client = client {
+			// Handle client cleanup
+			if let address = context.clientAddress,
+				let client = UnsafeMutablePointer<Discord_Client>(bitPattern: address)
+			{
 				var activity = Discord_Activity()
 				Discord_Activity_Init(&activity)
 				Discord_Client_UpdateRichPresence(client, &activity, nil, nil, nil)
@@ -806,16 +824,18 @@ public final class DiscordManager: ObservableObject {
 	}
 
 	deinit {
-		// Create cleanup data with retained values
-		let data = CleanupData(
+		// Capture cleanup data first
+		let context = CleanupActor.CleanupContext(
 			client: client,
 			timer: updateTimer
 		)
 
-		// Perform cleanup on background
+		// Create new actor instance
 		let actor = CleanupActor()
-		Task.detached { [data] in
-			await actor.cleanup(client: data.client, timer: data.timer)
+
+		// Schedule cleanup with Sendable context
+		Task.detached { @Sendable in
+			await actor.cleanup(context)
 		}
 	}
 }
