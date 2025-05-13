@@ -314,121 +314,48 @@ public final class DiscordManager: ObservableObject {
 
 	private func setupClient() {
 		print("🚀 Initializing Discord SDK...")
-
-		// Use atomic for thread-safety
-		let isInitialized = Atomic(value: false)
-
+		
 		self.client = UnsafeMutablePointer<Discord_Client>.allocate(capacity: 1)
 		guard let client = self.client else { return }
-
+		
 		Discord_Client_Init(client)
 		Discord_Client_SetApplicationId(client, applicationId)
-
-		// Mark as initialized
-		isInitialized.value = true
-
+		
 		// Configure logging
 		let logCallback: Discord_Client_LogCallback = { message, severity, userData in
-			let severityStr = { () -> String in
-				switch severity {
-				case Discord_LoggingSeverity_Info: return "INFO"
-				case Discord_LoggingSeverity_Warning: return "WARN"
-				case Discord_LoggingSeverity_Error: return "ERROR"
-				default: return "DEBUG"
-				}
-			}()
-
-			if let messagePtr = message.ptr,
-				let messageStr = String(
-					bytes: UnsafeRawBufferPointer(
-						start: messagePtr,
-						count: Int(message.size)
-					),
-					encoding: .utf8
-				)
-			{
-				print("[Discord \(severityStr)] \(messageStr)")
-			}
+			// ...existing logging code...
 		}
 		Discord_Client_AddLogCallback(client, logCallback, nil, nil, Discord_LoggingSeverity_Info)
-
+		
 		let userDataPtr = Unmanaged.passRetained(self).toOpaque()
 		Discord_Client_SetStatusChangedCallback(client, statusCallback, nil, userDataPtr)
-
-		// Use an atomic variable to track if callbacks should continue running
-		let shouldRunCallbacks = Atomic(value: true)
-
-		// Create a serial queue for Discord callbacks to prevent thread safety issues
-		let callbackQueue = DispatchQueue(label: "com.discordsocialkit.callbacks")
-
-		// Modified callback loop implementation
-		callbackQueue.async { [weak self, isInitialized, shouldRunCallbacks] in
+		
+		// Simple atomic flag for clean shutdown
+		let isRunning = Atomic(value: true)
+		self.callbackFlag = isRunning
+		
+		// Go back to the simpler thread approach that worked in your original code
+		DispatchQueue.global(qos: .utility).async { [weak self, isRunning] in
 			print("🔄 Starting Discord callback loop")
 			
-			// Track consecutive errors for backoff strategy
-			var consecutiveErrors = 0
-			let maxBackoffMs = 1000 // Max wait time in ms
-			
-			while shouldRunCallbacks.value && self != nil {
+			// Keep running as long as the manager exists and flag is true
+			while self != nil && isRunning.value {
 				autoreleasepool {
-					// Guard against crashes with a safety check
-					if isInitialized.value {
-						do {
-							// Use our safe wrapper instead of direct call
-							let success = Self.safeRunCallbacks()
-							if success {
-								consecutiveErrors = 0
-							} else {
-								consecutiveErrors += 1
-								print("⚠️ Discord callback failed, consecutive errors: \(consecutiveErrors)")
-							}
-						} catch {
-							consecutiveErrors += 1
-							print("⚠️ Discord callback error: \(error), consecutive errors: \(consecutiveErrors)")
-						}
-					}
+					// Direct call like in the original code
+					Discord_RunCallbacks()
 				}
-				
-				// Exponential backoff on errors
-				let backoffTime: TimeInterval
-				if consecutiveErrors > 0 {
-					// Calculate exponential backoff with jitter
-					let baseMs = min(pow(2.0, Double(consecutiveErrors)) * 10, Double(maxBackoffMs))
-					let jitterMs = Double.random(in: 0..<(baseMs * 0.1)) // Add up to 10% jitter
-					backoffTime = (baseMs + jitterMs) / 1000.0 // Convert ms to seconds
-					print("⏱️ Backing off Discord callbacks for \(Int(backoffTime * 1000))ms")
-				} else {
-					backoffTime = 0.02 // Normal interval
-				}
-				
-				Thread.sleep(forTimeInterval: backoffTime)
+				// Use same sleep interval as original code
+				Thread.sleep(forTimeInterval: 0.01)
 			}
+			
 			print("🛑 Discord callback loop ended")
 		}
-
-		// Store the atomic flag for cleanup
-		self.callbackFlag = shouldRunCallbacks
-
+		
 		print("✨ Discord SDK initialized successfully")
 	}
 
 	// Add property to store the flag
 	private var callbackFlag: Atomic<Bool>?
-
-	private static nonisolated func safeRunCallbacks() -> Bool {
-		// Define a properly typed closure
-		let callback: () -> Void = {
-			autoreleasepool {
-				Discord_RunCallbacks()
-			}
-		}
-		
-		// Use withoutActuallyEscaping properly
-		return withoutActuallyEscaping(callback) { escapableCallback in
-			escapableCallback()
-			return true
-		}
-	}
 
 	public func authorize() {
 		guard let client = self.client else { return }
