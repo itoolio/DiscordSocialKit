@@ -844,7 +844,7 @@ public final class DiscordManager: ObservableObject {
 
 	/// Thread-safe method to clean up Discord client resources
 	/// Safe to call from any context - deinit or MainActor
-	private func cleanupClient() {
+	private nonisolated func cleanupClient() {
 		// Atomically get and clear the client reference
 		// This makes it thread-safe even when called from different contexts
 		let clientToCleanup = client
