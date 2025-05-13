@@ -293,8 +293,8 @@ public final class DiscordManager: ObservableObject {
 	private func setupClient() {
 		print("🚀 Initializing Discord SDK...")
 
-		// Flag to track initialization state
-		var isInitialized = false
+		// Use atomic for thread-safety
+		let isInitialized = Atomic(value: false)
 
 		self.client = UnsafeMutablePointer<Discord_Client>.allocate(capacity: 1)
 		guard let client = self.client else { return }
@@ -303,42 +303,59 @@ public final class DiscordManager: ObservableObject {
 		Discord_Client_SetApplicationId(client, applicationId)
 
 		// Mark as initialized
-		isInitialized = true
+		isInitialized.value = true
 
+		// Configure logging
 		let logCallback: Discord_Client_LogCallback = { message, severity, userData in
-			// ...existing code...
+			let severityStr = { () -> String in
+				switch severity {
+				case Discord_LoggingSeverity_Info: return "INFO"
+				case Discord_LoggingSeverity_Warning: return "WARN"
+				case Discord_LoggingSeverity_Error: return "ERROR"
+				default: return "DEBUG"
+				}
+			}()
+
+			if let messagePtr = message.ptr,
+				let messageStr = String(
+					bytes: UnsafeRawBufferPointer(
+						start: messagePtr,
+						count: Int(message.size)
+					),
+					encoding: .utf8
+				)
+			{
+				print("[Discord \(severityStr)] \(messageStr)")
+			}
 		}
 		Discord_Client_AddLogCallback(client, logCallback, nil, nil, Discord_LoggingSeverity_Info)
 
 		let userDataPtr = Unmanaged.passRetained(self).toOpaque()
 		Discord_Client_SetStatusChangedCallback(client, statusCallback, nil, userDataPtr)
 
-		// Create a serial queue for Discord callbacks to prevent thread safety issues
-		let callbackQueue = DispatchQueue(label: "com.discordsocialkit.callbacks")
-
 		// Use an atomic variable to track if callbacks should continue running
 		let shouldRunCallbacks = Atomic(value: true)
 
-		callbackQueue.async { [weak self] in
+		// Create a serial queue for Discord callbacks to prevent thread safety issues
+		let callbackQueue = DispatchQueue(label: "com.discordsocialkit.callbacks")
+
+		callbackQueue.async { [weak self, isInitialized, shouldRunCallbacks] in
 			print("🔄 Starting Discord callback loop")
 
 			while shouldRunCallbacks.value && self != nil {
 				autoreleasepool {
 					// Guard against crashes with a safety check
-					if isInitialized {
+					if isInitialized.value {
 						// Wrap in try/catch to prevent crashes
-						let result = withoutActuallyEscaping(Discord_RunCallbacks) { callback in
+						withoutActuallyEscaping(Discord_RunCallbacks) { callback in
 							callback()
-							return true
+							return
 						}
-
-						if !result {
-							print("⚠️ Discord callback failed - pausing")
-							Thread.sleep(forTimeInterval: 0.1)
-						}
+					} else {
+						Thread.sleep(forTimeInterval: 0.1)  // Wait longer if not initialized
 					}
 				}
-				Thread.sleep(forTimeInterval: 0.02)  // Slightly longer delay
+				Thread.sleep(forTimeInterval: 0.02)
 			}
 			print("🛑 Discord callback loop ended")
 		}
