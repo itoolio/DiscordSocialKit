@@ -41,10 +41,12 @@ public final class DiscordManager: ObservableObject {
 	}
 	private var cachedUserData: UserData?
 
-	// Add cleanup actor at the top of the class
-	private actor CleanupActor {
-		func cleanup(client: UnsafeMutablePointer<Discord_Client>?, timer: Timer?) {
-			timer?.invalidate()
+	// Update CleanupActor to be Sendable
+	private actor CleanupActor: Sendable {
+		func cleanup(client: UnsafeMutablePointer<Discord_Client>?, timer: Timer?) async {
+			await MainActor.run {
+				timer?.invalidate()
+			}
 
 			if let client = client {
 				var activity = Discord_Activity()
@@ -729,78 +731,75 @@ public final class DiscordManager: ObservableObject {
 	private let authCallback: Discord_Client_AuthorizationCallback = {
 		result, code, redirectUri, userData in
 
-		// Make sendable copies immediately
-		let resultPtr = result
-		let codeData = Discord_String(ptr: code.ptr, size: code.size)
-		let uriData = Discord_String(ptr: redirectUri.ptr, size: redirectUri.size)
-		let userDataValue = userData
+		// Create immutable copies of all data
+		struct CallbackData {
+			let result: UnsafeMutablePointer<Discord_ClientResult>
+			let code: Discord_String
+			let uri: Discord_String
+			let userData: UnsafeMutableRawPointer
+		}
 
-		guard let userDataValue = userDataValue else { return }
-		let manager = Unmanaged<DiscordManager>.fromOpaque(userDataValue).takeUnretainedValue()
+		guard let result = result,
+			let userData = userData
+		else { return }
+
+		// Create thread-safe copy
+		let data = CallbackData(
+			result: result,
+			code: Discord_String(ptr: code.ptr, size: code.size),
+			uri: Discord_String(ptr: redirectUri.ptr, size: redirectUri.size),
+			userData: userData
+		)
+
+		let manager = Unmanaged<DiscordManager>.fromOpaque(data.userData).takeUnretainedValue()
 
 		Task { @MainActor [weak manager] in
 			guard let manager = manager else { return }
-			guard let resultPtr = resultPtr else {
-				manager.handleError("Authentication failed: No result received")
-				return
-			}
 
-			// Get verifier before any other async work
+			// Create verifier string first
 			guard var verifier = manager.verifier else {
 				manager.handleError("❌ Authentication Error: No verifier available")
 				return
 			}
 
-			// Create verifier string first
 			var localVerifierStr = Discord_String()
 			Discord_AuthorizationCodeVerifier_Verifier(&verifier, &localVerifierStr)
 
-			// Rest of auth flow using resultPtr directly
-			if !Discord_ClientResult_Successful(resultPtr) {
-				var errorStr = Discord_String()
-				Discord_ClientResult_Error(resultPtr, &errorStr)
-				if let errorPtr = errorStr.ptr,
-					let messageStr = String(
-						bytes: UnsafeRawBufferPointer(
-							start: errorPtr,
-							count: Int(errorStr.size)
-						),
-						encoding: .utf8
-					)
-				{
-					manager.handleError("Authentication Error: \(messageStr)")
-				} else {
-					manager.handleError("Authentication failed with unknown error")
-				}
+			// Use immutable data
+			if !Discord_ClientResult_Successful(data.result) {
+				manager.handleError("Authentication failed")
 				return
 			}
 
 			Discord_Client_GetToken(
 				manager.client,
 				manager.applicationId,
-				codeData,
-				localVerifierStr,  // Use our local copy
-				uriData,
+				data.code,
+				localVerifierStr,
+				data.uri,
 				manager.tokenCallback,
 				nil,
-				userDataValue
+				data.userData
 			)
 		}
 	}
 
-	// Replace deinit with actor-based cleanup
-	private let cleanupActor = CleanupActor()
-
 	deinit {
-		let clientCopy = client
-		let timerCopy = updateTimer
+		// Create local cleanup values
+		struct CleanupData {
+			let client: UnsafeMutablePointer<Discord_Client>?
+			let timer: Timer?
+		}
 
-		// Create a local cleanup actor that won't retain self
+		let data = CleanupData(
+			client: client,
+			timer: updateTimer
+		)
+
+		// Schedule cleanup on a background task
 		let actor = CleanupActor()
-
-		// Schedule cleanup without capturing self
-		Task.detached {
-			await actor.cleanup(client: clientCopy, timer: timerCopy)
+		Task.detached { @Sendable in
+			await actor.cleanup(client: data.client, timer: data.timer)
 		}
 	}
 }
