@@ -373,18 +373,15 @@ public final class DiscordManager: ObservableObject {
 				autoreleasepool {
 					// Guard against crashes with a safety check
 					if isInitialized.value {
-						// Use objc_sync to prevent re-entrancy issues
-						objc_sync_enter(Discord_RunCallbacks)
-						defer { objc_sync_exit(Discord_RunCallbacks) }
-						
 						do {
-							// Use exception handling to catch C crashes
-							try {
-								Discord_RunCallbacks()
-								// Reset error count on success
+							// Use our safe wrapper instead of direct call
+							let success = Self.safeRunCallbacks()
+							if success {
 								consecutiveErrors = 0
-								return true
-							}()
+							} else {
+								consecutiveErrors += 1
+								print("⚠️ Discord callback failed, consecutive errors: \(consecutiveErrors)")
+							}
 						} catch {
 							consecutiveErrors += 1
 							print("⚠️ Discord callback error: \(error), consecutive errors: \(consecutiveErrors)")
@@ -418,14 +415,20 @@ public final class DiscordManager: ObservableObject {
 	// Add property to store the flag
 	private var callbackFlag: Atomic<Bool>?
 
-	// Modify the Discord_RunCallbacks call to use a safer approach
+	// Fix the withoutActuallyEscaping type annotation issue
 	private static func safeRunCallbacks() -> Bool {
-		// Wrapping the C function call in a safer way
-		return withoutActuallyEscaping({
+		// Define a properly typed closure
+		let callback: () -> Void = {
 			autoreleasepool {
 				Discord_RunCallbacks()
 			}
-		}) { $0() }
+		}
+		
+		// Use withoutActuallyEscaping properly
+		return withoutActuallyEscaping(callback) { escapableCallback in
+			escapableCallback()
+			return true
+		}
 	}
 
 	public func authorize() {
