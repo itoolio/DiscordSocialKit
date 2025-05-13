@@ -27,6 +27,28 @@ extension RunLoop {
 	}
 }
 
+private final class Atomic<T>: @unchecked Sendable {
+	private let lock = NSLock()
+	private var _value: T
+
+	init(value: T) {
+		self._value = value
+	}
+
+	var value: T {
+		get {
+			lock.lock()
+			defer { lock.unlock() }
+			return _value
+		}
+		set {
+			lock.lock()
+			_value = newValue
+			lock.unlock()
+		}
+	}
+}
+
 @MainActor
 public final class DiscordManager: ObservableObject {
 	@MainActor private var client: UnsafeMutablePointer<Discord_Client>?
@@ -346,11 +368,7 @@ public final class DiscordManager: ObservableObject {
 				autoreleasepool {
 					// Guard against crashes with a safety check
 					if isInitialized.value {
-						// Wrap in try/catch to prevent crashes
-						withoutActuallyEscaping(Discord_RunCallbacks) { callback in
-							callback()
-							return
-						}
+						Discord_RunCallbacks()
 					} else {
 						Thread.sleep(forTimeInterval: 0.1)  // Wait longer if not initialized
 					}
@@ -364,25 +382,6 @@ public final class DiscordManager: ObservableObject {
 		self.callbackFlag = shouldRunCallbacks
 
 		print("✨ Discord SDK initialized successfully")
-	}
-
-	// Simple atomic wrapper
-	private class Atomic<T> {
-		private let queue = DispatchQueue(label: "com.discordsocialkit.atomic")
-		private var _value: T
-
-		init(value: T) {
-			self._value = value
-		}
-
-		var value: T {
-			get {
-				return queue.sync { _value }
-			}
-			set {
-				queue.sync { _value = newValue }
-			}
-		}
 	}
 
 	// Add property to store the flag
