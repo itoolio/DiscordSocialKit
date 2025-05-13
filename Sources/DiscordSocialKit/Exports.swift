@@ -8,10 +8,11 @@
 import Foundation
 import SwiftData
 
-// Re-export the DiscordToken model to make it visible when importing the package
-@_exported import struct SwiftData.ModelContainer
-@_exported import struct SwiftData.ModelContext
-@_exported import struct SwiftData.Schema
+// Re-export SwiftData types needed for model usage
+@_exported import class SwiftData.ModelContainer
+@_exported import class SwiftData.ModelContext
+@_exported import class SwiftData.Schema
 
-// Force the DiscordToken class to be exposed publicly
+// Explicitly re-export the DiscordToken model
+// This ensures it's visible to importers even if module boundaries cause issues
 public typealias DiscordTokenModel = DiscordToken
