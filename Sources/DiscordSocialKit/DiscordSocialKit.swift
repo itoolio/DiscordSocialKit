@@ -415,8 +415,7 @@ public final class DiscordManager: ObservableObject {
 	// Add property to store the flag
 	private var callbackFlag: Atomic<Bool>?
 
-	// Fix the withoutActuallyEscaping type annotation issue
-	private static func safeRunCallbacks() -> Bool {
+	private static nonisolated func safeRunCallbacks() -> Bool {
 		// Define a properly typed closure
 		let callback: () -> Void = {
 			autoreleasepool {
