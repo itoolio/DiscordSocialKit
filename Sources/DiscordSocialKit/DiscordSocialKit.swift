@@ -321,7 +321,7 @@ public final class DiscordManager: ObservableObject {
 		Discord_Client_Init(client)
 		Discord_Client_SetApplicationId(client, applicationId)
 		
-		// Configure logging callback
+		// Configure logging
 		let logCallback: Discord_Client_LogCallback = { message, severity, userData in
 			let severityStr = { () -> String in
 				switch severity {
@@ -350,44 +350,17 @@ public final class DiscordManager: ObservableObject {
 		let userDataPtr = Unmanaged.passRetained(self).toOpaque()
 		Discord_Client_SetStatusChangedCallback(client, statusCallback, nil, userDataPtr)
 		
-		// Simple atomic flag for clean shutdown
 		let isRunning = Atomic(value: true)
 		self.callbackFlag = isRunning
 		
-		// Use the simplest possible approach that works reliably with Discord's C SDK
 		DispatchQueue.global(qos: .utility).async { [weak self, isRunning] in
 			print("🔄 Starting Discord callback loop")
 			
-			var consecutiveErrors = 0
-			
 			while let _ = self, isRunning.value {
 				autoreleasepool {
-					// Simplest way to avoid crashes: wrap in try-catch equivalent
-					// Note: Using Swift's defer for consistent cleanup
-					defer {
-						// Use exponential backoff only if we're having issues
-						if consecutiveErrors > 0 {
-							let backoffMs = min(consecutiveErrors * 20, 500) // Cap at 500ms
-							Thread.sleep(forTimeInterval: TimeInterval(backoffMs) / 1000.0)
-							print("⚠️ Discord callback backoff: \(backoffMs)ms")
-						} else {
-							Thread.sleep(forTimeInterval: 0.01) // Standard interval
-						}
-					}
-					
-					do {
-						// Swift doesn't have C-style try/catch, so we'll use Swift's error handling
-						Discord_RunCallbacks()
-						// Success, reset error counter
-						if consecutiveErrors > 0 {
-							consecutiveErrors = 0
-							print("✅ Discord callbacks resumed successfully")
-						}
-					} catch {
-						consecutiveErrors += 1
-						print("⚠️ Discord callback error: \(consecutiveErrors)")
-					}
+					Discord_RunCallbacks()
 				}
+				Thread.sleep(forTimeInterval: 0.01)
 			}
 			
 			print("🛑 Discord callback loop ended")
