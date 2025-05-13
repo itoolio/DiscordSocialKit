@@ -43,24 +43,28 @@ public final class DiscordManager: ObservableObject {
 
 	// Update CleanupActor to be Sendable
 	private actor CleanupActor: Sendable {
-		// Store raw values to make them Sendable
-		private struct CleanupContext: Sendable {
+		// Make CleanupContext internal to actor
+		struct CleanupContext: Sendable {
 			let clientAddress: UInt?
-			let timerIdentifier: String?
+			let timerRetained: Unmanaged<Timer>?  // Retain timer directly
 
 			init(client: UnsafeMutablePointer<Discord_Client>?, timer: Timer?) {
 				self.clientAddress = client.map { UInt(bitPattern: $0) }
-				self.timerIdentifier = timer?.description
+				self.timerRetained = timer.map(Unmanaged.passRetained)
+			}
+		}
+
+		private func cleanupTimer(_ timer: Timer?) async {
+			await MainActor.run {
+				timer?.invalidate()
 			}
 		}
 
 		func cleanup(_ context: CleanupContext) async {
-			// Handle timer on main thread
-			if let identifier = context.timerIdentifier {
-				await MainActor.run {
-					// Find timer by identifier and invalidate
-					RunLoop.main.allTimers.first { $0.description == identifier }?.invalidate()
-				}
+			// Handle timer cleanup with proper retain/release
+			if let timer = context.timerRetained?.takeUnretainedValue() {
+				await cleanupTimer(timer)
+				context.timerRetained?.release()
 			}
 
 			// Handle client cleanup
@@ -824,17 +828,15 @@ public final class DiscordManager: ObservableObject {
 	}
 
 	deinit {
-		// Capture cleanup data first
+		// Create cleanup context with retained timer
 		let context = CleanupActor.CleanupContext(
 			client: client,
 			timer: updateTimer
 		)
 
-		// Create new actor instance
+		// Create actor and schedule cleanup
 		let actor = CleanupActor()
-
-		// Schedule cleanup with Sendable context
-		Task.detached { @Sendable in
+		Task.detached { [context] in
 			await actor.cleanup(context)
 		}
 	}
