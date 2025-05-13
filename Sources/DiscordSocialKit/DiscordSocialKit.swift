@@ -58,6 +58,21 @@ public final class DiscordManager: ObservableObject {
 		}
 	}
 
+	// Add Sendable cleanup data structure
+	private struct CleanupData: Sendable {
+		let clientPtr: UnsafeMutableRawPointer?
+		let timer: Timer?
+
+		init(client: UnsafeMutablePointer<Discord_Client>?, timer: Timer?) {
+			self.clientPtr = UnsafeMutableRawPointer(client)
+			self.timer = timer
+		}
+
+		var client: UnsafeMutablePointer<Discord_Client>? {
+			clientPtr.map { UnsafeMutablePointer<Discord_Client>($0) }
+		}
+	}
+
 	public func startPresenceUpdates() {
 		print("🎮 Starting Discord Rich Presence")
 		isRunning = true
@@ -785,21 +800,21 @@ public final class DiscordManager: ObservableObject {
 	}
 
 	deinit {
-		// Create local cleanup values
-		struct CleanupData {
-			let client: UnsafeMutablePointer<Discord_Client>?
-			let timer: Timer?
-		}
-
+		// Create cleanup data with sendable pointer types
 		let data = CleanupData(
 			client: client,
 			timer: updateTimer
 		)
 
-		// Schedule cleanup on a background task
-		let actor = CleanupActor()
-		Task.detached { @Sendable in
-			await actor.cleanup(client: data.client, timer: data.timer)
+		// Capture values before cleanup
+		let cleanupActor = CleanupActor()
+
+		// Create detached task with sendable data
+		Task.detached { [data] in
+			await cleanupActor.cleanup(
+				client: data.client,
+				timer: data.timer
+			)
 		}
 	}
 }
