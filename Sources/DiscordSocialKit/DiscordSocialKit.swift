@@ -853,9 +853,10 @@ public final class DiscordManager: ObservableObject {
 	
 	/// Call this method to manually release resources before the object is deallocated
 	public func shutdown() {
-		Task { @MainActor in
+		// Use Task.detached to avoid capturing self in a way that prevents deallocation
+		Task.detached { @MainActor in
 			await MainActor.run {
-				cleanup()
+				self.cleanup()
 			}
 		}
 	}
