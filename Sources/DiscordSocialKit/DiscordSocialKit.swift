@@ -853,32 +853,37 @@ public final class DiscordManager: ObservableObject {
 		}
 	}
 
-	// Helper to safely capture MainActor properties for cleanup
-	private func prepareCleanupData() -> (clientAddress: UInt?, timerIdentifier: ObjectIdentifier?)
-	{
+	// Add a separate MainActor-isolated method for cleanup preparation
+	@MainActor
+	private func captureCleanupValues() -> (UInt?, ObjectIdentifier?) {
+		// Safely capture MainActor-isolated properties
 		let clientAddress = client.map { UInt(bitPattern: $0) }
 		let timerIdentifier = updateTimer.map { ObjectIdentifier($0) }
 		return (clientAddress, timerIdentifier)
 	}
 
-	deinit {
-		// Get values we need before creating task
-		let clientAddress: UInt?
-		let timerIdentifier: ObjectIdentifier?
+	// Add MainActor-isolated cleanup initiator
+	@MainActor
+	private func initiateCleanup(actor: CleanupActor) {
+		let values = captureCleanupValues()
 
-		// Access MainActor-isolated values directly in deinit because we're already on MainActor
-		clientAddress = client.map { UInt(bitPattern: $0) }
-		timerIdentifier = updateTimer.map { ObjectIdentifier($0) }
-
-		// Create actor outside of task
-		let cleanupActor = CleanupActor()
-
-		// Create a detached task with captured values (not self)
-		Task.detached { [clientAddress, timerIdentifier, cleanupActor] in
-			await cleanupActor.cleanupResources(
+		// Schedule cleanup without capturing self
+		Task.detached { [clientAddress = values.0, timerIdentifier = values.1, actor] in
+			await actor.cleanupResources(
 				clientAddress: clientAddress,
 				timerIdentifier: timerIdentifier
 			)
+		}
+	}
+
+	deinit {
+		// Create the actor
+		let cleanupActor = CleanupActor()
+
+		// Schedule cleanup on MainActor (since we can't access properties directly)
+		// This uses a synchronous approach to ensure cleanup happens
+		Task { @MainActor in
+			initiateCleanup(actor: cleanupActor)
 		}
 	}
 }
