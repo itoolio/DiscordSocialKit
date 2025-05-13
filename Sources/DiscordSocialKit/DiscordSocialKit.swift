@@ -27,7 +27,7 @@ public final class DiscordManager: ObservableObject {
 	@Published public private(set) var isAuthorizing = false
 	@Published public var isRunning = false
 	@Published public private(set) var username: String?
-	@Published public private(set) var globalName: String?  // Add display name
+	@Published public private(set) var globalName: String?
 	@Published public private(set) var userId: UInt64 = 0
 	@Published public private(set) var avatarURL: URL?
 
@@ -639,7 +639,7 @@ public final class DiscordManager: ObservableObject {
 
 	public func refreshTokenIfNeeded() async {
 		guard let token = loadExistingToken(),
-			let refreshToken = token.refreshToken,  // Now correctly handling optional
+			let refreshToken = token.refreshToken,
 			token.needsRefresh
 		else {
 			print("⚠️ No valid refresh token available")
@@ -661,7 +661,7 @@ public final class DiscordManager: ObservableObject {
 	public func setupWithExistingToken() async {
 		await MainActor.run {
 			guard let token = loadExistingToken(),
-				let accessToken = token.accessToken  // Now correctly handling optional
+				let accessToken = token.accessToken
 			else {
 				print("⚠️ No existing token found or token invalid")
 				return
@@ -724,7 +724,7 @@ public final class DiscordManager: ObservableObject {
 						Discord_Client_Connect(manager.client)
 					},
 					nil,
-					userData
+					Unmanaged.passRetained(manager).toOpaque()
 				)
 			}
 		} else {
@@ -798,7 +798,7 @@ public final class DiscordManager: ObservableObject {
 					Discord_Client_UpdateToken(
 						manager.client,
 						Discord_AuthorizationTokenType_Bearer,
-						token,
+						accessStr,
 						{ result, userData in
 							print("🔌 Connecting with new token...")
 							let manager = Unmanaged<DiscordManager>.fromOpaque(userData!)
@@ -806,7 +806,7 @@ public final class DiscordManager: ObservableObject {
 							Discord_Client_Connect(manager.client)
 						},
 						nil,
-						userData
+						Unmanaged.passRetained(manager).toOpaque()
 					)
 				}
 			}
@@ -820,11 +820,12 @@ public final class DiscordManager: ObservableObject {
 			redirectUri,
 			tokenCallback,
 			nil,
-			userData
+			Unmanaged.passRetained(manager).toOpaque() 
 		)
 	}
 
-	deinit {
+	@MainActor
+	private func cleanup() {
 		// Stop timer synchronously
 		updateTimer?.invalidate()
 		updateTimer = nil
@@ -846,6 +847,13 @@ public final class DiscordManager: ObservableObject {
 
 			Discord_Client_Drop(client)
 			client.deallocate()
+		}
+	}
+
+	deinit {
+		// Schedule cleanup on the main actor
+		Task { @MainActor in
+			await self.cleanup()
 		}
 	}
 }
