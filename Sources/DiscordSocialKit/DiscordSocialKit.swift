@@ -579,14 +579,14 @@ public final class DiscordManager: ObservableObject {
 			do {
 				print("💾 Saving new token...")
 
-				let descriptor = FetchDescriptor<DSKDiscordToken>()
+				let descriptor = FetchDescriptor<DiscordToken>()
 				let existingTokens = try context.fetch(descriptor)
 				for token in existingTokens {
 					print("🗑️ Removing old token: \(token.tokenId)")
 					context.delete(token)
 				}
 
-				let token = DSKDiscordToken(
+				let token = DiscordToken(
 					accessToken: accessToken,
 					refreshToken: refreshToken,
 					expiresIn: expiresIn
@@ -605,14 +605,14 @@ public final class DiscordManager: ObservableObject {
 		}
 	}
 
-	private func loadExistingToken() -> DSKDiscordToken? {
+	private func loadExistingToken() -> DiscordToken? {
 		guard let context = modelContext else {
 			print("❌ Cannot load token: No ModelContext available")
 			return nil
 		}
 
-		var descriptor = FetchDescriptor<DSKDiscordToken>()
-		descriptor.sortBy = [SortDescriptor(\DSKDiscordToken.expiresAt, order: .reverse)]
+		var descriptor = FetchDescriptor<DiscordToken>()
+		descriptor.sortBy = [SortDescriptor(\DiscordToken.expiresAt, order: .reverse)]
 		descriptor.fetchLimit = 1
 
 		do {

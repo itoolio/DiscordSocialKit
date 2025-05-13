@@ -9,7 +9,7 @@ import Foundation
 import SwiftData
 
 @Model
-public final class DSKDiscordToken {
+public final class DiscordToken {
 	public var tokenId: String = UUID().uuidString
 	public var accessToken: String?
 	public var refreshToken: String?
