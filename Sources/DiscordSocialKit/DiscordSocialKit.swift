@@ -847,24 +847,25 @@ public final class DiscordManager: ObservableObject {
 
 			Discord_Client_Drop(client)
 			client.deallocate()
+			self.client = nil
+		}
+	}
+	
+	/// Call this method to manually release resources before the object is deallocated
+	public func shutdown() {
+		Task { @MainActor in
+			await MainActor.run {
+				cleanup()
+			}
 		}
 	}
 
-	// Use nonisolated deinit
-	nonisolated deinit {
-		// Dispatch synchronously to the main actor to perform cleanup
-		// This avoids capturing self in an async context
-		Task { @MainActor [weak client = client] in
-			// Only clean up the client pointer if it still exists
-			if let client {
-				// Basic presence clear without callback
-				var activity = Discord_Activity()
-				Discord_Activity_Init(&activity)
-				Discord_Client_UpdateRichPresence(client, &activity, nil, nil, nil)
-
-				Discord_Client_Drop(client)
-				client.deallocate()
-			}
-		}
+	deinit {
+		// Only a minimal cleanup in deinit that doesn't rely on MainActor isolation
+		// The primary client cleanup should be done by calling shutdown() before releasing
+		
+		// IMPORTANT NOTE: This may leave some resources uncleaned if shutdown() wasn't called
+		// But this avoids crashes due to trying to access MainActor-isolated properties from deinit
+		print("⚠️ DiscordManager being deallocated - if shutdown() wasn't called, some resources may remain allocated")
 	}
 }
