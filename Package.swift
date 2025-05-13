@@ -9,7 +9,6 @@ let package = Package(
 		.iOS(.v17),
 		.macOS(.v14),
 	],
-	swiftLanguageModes: [.v5],
 	products: [
 		.library(
 			name: "DiscordSocialKit",
