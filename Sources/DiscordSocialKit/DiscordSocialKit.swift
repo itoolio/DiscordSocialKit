@@ -850,10 +850,21 @@ public final class DiscordManager: ObservableObject {
 		}
 	}
 
-	deinit {
-		// Schedule cleanup on the main actor
-		Task { @MainActor in
-			await self.cleanup()
+	// Use nonisolated deinit
+	nonisolated deinit {
+		// Dispatch synchronously to the main actor to perform cleanup
+		// This avoids capturing self in an async context
+		Task { @MainActor [weak client = client] in
+			// Only clean up the client pointer if it still exists
+			if let client {
+				// Basic presence clear without callback
+				var activity = Discord_Activity()
+				Discord_Activity_Init(&activity)
+				Discord_Client_UpdateRichPresence(client, &activity, nil, nil, nil)
+
+				Discord_Client_Drop(client)
+				client.deallocate()
+			}
 		}
 	}
 }
