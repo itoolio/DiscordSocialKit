@@ -43,28 +43,32 @@ public final class DiscordManager: ObservableObject {
 
 	// Update CleanupActor to be Sendable
 	private actor CleanupActor: Sendable {
-		// Make CleanupContext internal to actor
-		struct CleanupContext: Sendable {
+		// Make cleanup context fully Sendable
+		private struct CleanupContext: Sendable {
 			let clientAddress: UInt?
-			let timerRetained: Unmanaged<Timer>?  // Retain timer directly
+			let timerIdentity: ObjectIdentifier?  // Store timer identity instead of timer
 
 			init(client: UnsafeMutablePointer<Discord_Client>?, timer: Timer?) {
 				self.clientAddress = client.map { UInt(bitPattern: $0) }
-				self.timerRetained = timer.map(Unmanaged.passRetained)
+				self.timerIdentity = timer.map(ObjectIdentifier.init)
 			}
 		}
 
-		private func cleanupTimer(_ timer: Timer?) async {
-			await MainActor.run {
-				timer?.invalidate()
-			}
+		// Keep track of timers to invalidate
+		private var timersToInvalidate: Set<ObjectIdentifier> = []
+
+		private func invalidateTimer(_ identity: ObjectIdentifier) {
+			timersToInvalidate.insert(identity)
 		}
 
 		func cleanup(_ context: CleanupContext) async {
-			// Handle timer cleanup with proper retain/release
-			if let timer = context.timerRetained?.takeUnretainedValue() {
-				await cleanupTimer(timer)
-				context.timerRetained?.release()
+			// Handle timer cleanup on main thread
+			if let timerIdentity = context.timerIdentity {
+				await MainActor.run {
+					Timer.scheduledTimers.first { timer in
+						ObjectIdentifier(timer) == timerIdentity
+					}?.invalidate()
+				}
 			}
 
 			// Handle client cleanup
@@ -77,6 +81,29 @@ public final class DiscordManager: ObservableObject {
 				Discord_Client_Drop(client)
 				client.deallocate()
 			}
+		}
+	}
+
+	// Add Timer extension to support cleanup
+	extension Timer {
+		fileprivate static var scheduledTimers: [Timer] {
+			RunLoop.main.scheduledTimers
+		}
+	}
+
+	extension RunLoop {
+		fileprivate var scheduledTimers: [Timer] {
+			// Get all modes' timers
+			allModes.flatMap { mode in
+				guard let modeObj = CFRunLoopCopyAllTimers(getCFRunLoop(), mode.cf) else {
+					return []
+				}
+				return (modeObj.takeRetainedValue() as! [Timer])
+			}
+		}
+
+		fileprivate var allModes: [RunLoop.Mode] {
+			[.common, .default, .tracking]
 		}
 	}
 
