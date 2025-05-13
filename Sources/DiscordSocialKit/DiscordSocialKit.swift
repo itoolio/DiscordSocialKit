@@ -55,44 +55,45 @@ public final class DiscordManager: ObservableObject {
 	private var cachedUserData: UserData?
 
 	private actor CleanupActor: @unchecked Sendable {
-		private struct Context: Sendable {
-			let clientAddress: UInt?
-			let timerIdentity: ObjectIdentifier?
+		private struct CleanupData: Sendable {
+			struct PointerData: Sendable {
+				let address: UInt
+			}
+			let clientData: PointerData?
+			let timerId: ObjectIdentifier?
 		}
 
-		private var context: Context?
+		private var cleanupData: CleanupData?
 
-		// Prepare context from isolated values
-		func prepare(_ clientPtr: UnsafeMutablePointer<Discord_Client>?, _ timer: Timer?) {
-			context = Context(
-				clientAddress: clientPtr.map { UInt(bitPattern: $0) },
-				timerIdentity: timer.map { ObjectIdentifier($0) }
+		nonisolated func prepareCleanup(
+			client: UnsafeMutablePointer<Discord_Client>?,
+			timer: Timer?
+		) -> CleanupData {
+			CleanupData(
+				clientData: client.map { CleanupData.PointerData(address: UInt(bitPattern: $0)) },
+				timerId: timer.map(ObjectIdentifier.init)
 			)
 		}
 
-		// MainActor-isolated preparation
-		@MainActor
-		func prepareFromManager(_ manager: DiscordManager) async {
-			let clientPtr = manager.client
-			let timer = manager.updateTimer
-			await prepare(clientPtr, timer)
+		func initialize(_ data: CleanupData) {
+			cleanupData = data
 		}
 
 		func cleanup() async {
-			guard let context = context else { return }
+			guard let data = cleanupData else { return }
 
-			// Handle timer cleanup on main thread
-			if let timerIdentity = context.timerIdentity {
+			// Handle timer on main thread
+			if let timerId = data.timerId {
 				await MainActor.run {
 					Timer.currentMainThreadTimers()
-						.first { ObjectIdentifier($0) == timerIdentity }?
+						.first { ObjectIdentifier($0) == timerId }?
 						.invalidate()
 				}
 			}
 
 			// Handle client cleanup
-			if let address = context.clientAddress,
-				let client = UnsafeMutablePointer<Discord_Client>(bitPattern: address)
+			if let clientData = data.clientData,
+				let client = UnsafeMutablePointer<Discord_Client>(bitPattern: clientData.address)
 			{
 				var activity = Discord_Activity()
 				Discord_Activity_Init(&activity)
@@ -823,15 +824,23 @@ public final class DiscordManager: ObservableObject {
 	}
 
 	deinit {
-		// Capture values before task creation
-		let clientPtr = client
-		let timer = updateTimer
-		let actor = CleanupActor()
-
-		// Create cleanup task without capturing self
-		Task.detached {
-			await actor.prepare(clientPtr, timer)
+		@Sendable func performCleanup(
+			actor: CleanupActor,
+			client: UnsafeMutablePointer<Discord_Client>?,
+			timer: Timer?
+		) async {
+			let data = actor.prepareCleanup(client: client, timer: timer)
+			await actor.initialize(data)
 			await actor.cleanup()
+		}
+
+		// Create cleanup task
+		let actor = CleanupActor()
+		Task.detached { [weak self] in
+			await MainActor.run { [weak self] in
+				guard let self = self else { return }
+				await performCleanup(actor: actor, client: self.client, timer: self.updateTimer)
+			}
 		}
 	}
 }
