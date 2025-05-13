@@ -13,7 +13,10 @@ import discord_partner_sdk
 
 @MainActor
 public final class DiscordManager: ObservableObject {
-	private var client: UnsafeMutablePointer<Discord_Client>?
+	// Thread-safe client reference using a lock
+	private let clientLock = NSLock()
+	private var _client: UnsafeMutablePointer<Discord_Client>?
+	
 	private var applicationId: UInt64
 	private var verifier: Discord_AuthorizationCodeVerifier?
 	private var modelContext: ModelContext?
@@ -73,7 +76,7 @@ public final class DiscordManager: ObservableObject {
 	private let presenceUpdateInterval: TimeInterval = 5
     
 	private func fetchUserInfo() {
-		guard let client = client else { return }
+		guard let client = getClient() else { return }
 
 		var userHandle = Discord_UserHandle(opaque: nil)
 		Discord_Client_GetCurrentUser(client, &userHandle)
@@ -220,8 +223,12 @@ public final class DiscordManager: ObservableObject {
 		print("🚀 Initializing Discord SDK...")
 
 		// Create client and retain pointer
-		self.client = UnsafeMutablePointer<Discord_Client>.allocate(capacity: 1)
-		guard let client = self.client else { return }
+		let client = UnsafeMutablePointer<Discord_Client>.allocate(capacity: 1)
+		
+		// Store in our thread-safe storage
+		clientLock.lock()
+		_client = client
+		clientLock.unlock()
 
 		Discord_Client_Init(client)
 		Discord_Client_SetApplicationId(client, applicationId)
@@ -267,8 +274,15 @@ public final class DiscordManager: ObservableObject {
 		print("✨ Discord SDK initialized successfully")
 	}
 
+	// Thread-safe getter for the client
+	private func getClient() -> UnsafeMutablePointer<Discord_Client>? {
+		clientLock.lock()
+		defer { clientLock.unlock() }
+		return _client
+	}
+
 	public func authorize() {
-		guard let client = self.client else { return }
+		guard let client = getClient() else { return }
 		print("Starting auth flow...")
 		isAuthorizing = true
 
@@ -294,7 +308,7 @@ public final class DiscordManager: ObservableObject {
 	}
 
 	public func clearRichPresence() {
-		guard let client = client else { return }
+		guard let client = getClient() else { return }
 		print("🧹 Clearing rich presence...")
 
 		Discord_Client_ClearRichPresence(client)
@@ -362,7 +376,7 @@ public final class DiscordManager: ObservableObject {
 		currentTime: TimeInterval,
 		artworkURL: URL? = nil
 	) async {
-		guard let client = client else {
+		guard let client = getClient() else {
 			print("⚠️ Cannot update Rich Presence: No client")
 			return
 		}
@@ -649,7 +663,7 @@ public final class DiscordManager: ObservableObject {
 
 		print("🔄 Refreshing token using refresh token")
 		Discord_Client_RefreshToken(
-			client,
+			getClient(),
 			applicationId,
 			refreshStr,
 			tokenCallback,
@@ -674,14 +688,14 @@ public final class DiscordManager: ObservableObject {
 				print("✅ Using existing valid token")
 				let accessStr = makeDiscordString(from: accessToken)
 				Discord_Client_UpdateToken(
-					client,
+					getClient(),
 					Discord_AuthorizationTokenType_Bearer,
 					accessStr,
 					{ result, userData in
 						let manager = Unmanaged<DiscordManager>.fromOpaque(userData!)
 							.takeUnretainedValue()
 						print("🔑 Loaded token from storage, connecting to Discord...")
-						Discord_Client_Connect(manager.client)
+						Discord_Client_Connect(manager.getClient())
 					},
 					nil,
 					Unmanaged.passRetained(self).toOpaque()
@@ -714,14 +728,14 @@ public final class DiscordManager: ObservableObject {
 
 				let accessStr = manager.makeDiscordString(from: tokenStr)
 				Discord_Client_UpdateToken(
-					manager.client,
+					manager.getClient(),
 					Discord_AuthorizationTokenType_Bearer,
 					accessStr,
 					{ result, userData in
 						let manager = Unmanaged<DiscordManager>.fromOpaque(userData!)
 							.takeUnretainedValue()
 						print("🔑 Token updated, connecting to Discord...")
-						Discord_Client_Connect(manager.client)
+						Discord_Client_Connect(manager.getClient())
 					},
 					nil,
 					Unmanaged.passRetained(manager).toOpaque()
@@ -796,14 +810,14 @@ public final class DiscordManager: ObservableObject {
 					print("🔑 Updating client with new token...")
 					let accessStr = manager.makeDiscordString(from: tokenStr)
 					Discord_Client_UpdateToken(
-						manager.client,
+						manager.getClient(),
 						Discord_AuthorizationTokenType_Bearer,
 						accessStr,
 						{ result, userData in
 							print("🔌 Connecting with new token...")
 							let manager = Unmanaged<DiscordManager>.fromOpaque(userData!)
 								.takeUnretainedValue()
-							Discord_Client_Connect(manager.client)
+							Discord_Client_Connect(manager.getClient())
 						},
 						nil,
 						Unmanaged.passRetained(manager).toOpaque()
@@ -813,7 +827,7 @@ public final class DiscordManager: ObservableObject {
 		}
 
 		Discord_Client_GetToken(
-			manager.client,
+			manager.getClient(),
 			manager.applicationId,
 			code,
 			verifierStr,
@@ -844,11 +858,12 @@ public final class DiscordManager: ObservableObject {
 
 	/// Thread-safe method to clean up Discord client resources
 	/// Safe to call from any context - deinit or MainActor
-	private nonisolated func cleanupClient() {
-		// Atomically get and clear the client reference
-		// This makes it thread-safe even when called from different contexts
-		let clientToCleanup = client
-		client = nil  // Can safely set to nil from both contexts
+	private func cleanupClient() {
+		// Thread-safe get and clear
+		clientLock.lock()
+		let clientToCleanup = _client
+		_client = nil
+		clientLock.unlock()
 		
 		// Clean up the client if we had one
 		if let clientToCleanup = clientToCleanup {
@@ -874,7 +889,7 @@ public final class DiscordManager: ObservableObject {
 	}
 
 	deinit {
-		// Just clean up the client - it's thread-safe
+		// Thread-safe cleanup that can be called from any context
 		cleanupClient()
 		print("🧹 Discord manager deallocated")
 	}
