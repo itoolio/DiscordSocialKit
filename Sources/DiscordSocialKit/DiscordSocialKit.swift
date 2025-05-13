@@ -730,7 +730,7 @@ public final class DiscordManager: ObservableObject {
 		result, code, redirectUri, userData in
 
 		// Make sendable copies immediately
-		let resultData = UnsafeMutablePointer<Discord_ClientResult>(result)?.pointee
+		let resultPtr = result
 		let codeData = Discord_String(ptr: code.ptr, size: code.size)
 		let uriData = Discord_String(ptr: redirectUri.ptr, size: redirectUri.size)
 		let userDataValue = userData
@@ -740,7 +740,7 @@ public final class DiscordManager: ObservableObject {
 
 		Task { @MainActor [weak manager] in
 			guard let manager = manager else { return }
-			guard let resultData = resultData else {
+			guard let resultPtr = resultPtr else {
 				manager.handleError("Authentication failed: No result received")
 				return
 			}
@@ -755,10 +755,10 @@ public final class DiscordManager: ObservableObject {
 			var localVerifierStr = Discord_String()
 			Discord_AuthorizationCodeVerifier_Verifier(&verifier, &localVerifierStr)
 
-			// Rest of auth flow
-			if !Discord_ClientResult_Successful(resultData) {
+			// Rest of auth flow using resultPtr directly
+			if !Discord_ClientResult_Successful(resultPtr) {
 				var errorStr = Discord_String()
-				Discord_ClientResult_Error(result, &errorStr)
+				Discord_ClientResult_Error(resultPtr, &errorStr)
 				if let errorPtr = errorStr.ptr,
 					let messageStr = String(
 						bytes: UnsafeRawBufferPointer(
