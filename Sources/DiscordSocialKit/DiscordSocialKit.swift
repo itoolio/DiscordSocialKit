@@ -838,35 +838,44 @@ public final class DiscordManager: ObservableObject {
 		lastDuration = 0
 		lastCurrentTime = 0
 
-		// Clear client
-		if let client = client {
+		// Use the thread-safe client cleanup
+		cleanupClient()
+	}
+
+	/// Thread-safe method to clean up Discord client resources
+	/// Safe to call from any context - deinit or MainActor
+	private func cleanupClient() {
+		// Atomically get and clear the client reference
+		// This makes it thread-safe even when called from different contexts
+		let clientToCleanup = client
+		client = nil  // Can safely set to nil from both contexts
+		
+		// Clean up the client if we had one
+		if let clientToCleanup = clientToCleanup {
 			// Basic presence clear without callback
 			var activity = Discord_Activity()
 			Discord_Activity_Init(&activity)
-			Discord_Client_UpdateRichPresence(client, &activity, nil, nil, nil)
+			Discord_Client_UpdateRichPresence(clientToCleanup, &activity, nil, nil, nil)
 
-			Discord_Client_Drop(client)
-			client.deallocate()
-			self.client = nil
+			Discord_Client_Drop(clientToCleanup)
+			clientToCleanup.deallocate()
+			print("🧹 Discord client resources released")
 		}
 	}
 	
-	/// Call this method to manually release resources before the object is deallocated
+	/// Call this method to manually release resources before the object is deallocated.
+	/// While not strictly required (deinit will handle client cleanup), 
+	/// calling this method is recommended for proper cleanup of timers and Discord state.
+	/// The client will automatically clear most resources during deallocation.
 	public func shutdown() {
-		// Use Task.detached to avoid capturing self in a way that prevents deallocation
-		Task.detached { @MainActor in
-			await MainActor.run {
-				self.cleanup()
-			}
+		Task { @MainActor in
+			cleanup()
 		}
 	}
 
 	deinit {
-		// Only a minimal cleanup in deinit that doesn't rely on MainActor isolation
-		// The primary client cleanup should be done by calling shutdown() before releasing
-		
-		// IMPORTANT NOTE: This may leave some resources uncleaned if shutdown() wasn't called
-		// But this avoids crashes due to trying to access MainActor-isolated properties from deinit
-		print("⚠️ DiscordManager being deallocated - if shutdown() wasn't called, some resources may remain allocated")
+		// Just clean up the client - it's thread-safe
+		cleanupClient()
+		print("🧹 Discord manager deallocated")
 	}
 }
