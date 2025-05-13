@@ -59,16 +59,24 @@ public final class DiscordManager: ObservableObject {
 			let clientAddress: UInt?
 			let timerIdentity: ObjectIdentifier?
 
-			init(from manager: DiscordManager) {
-				self.clientAddress = manager.client.map { UInt(bitPattern: $0) }
-				self.timerIdentity = manager.updateTimer.map { ObjectIdentifier($0) }
+			init(client: UnsafeMutablePointer<Discord_Client>?, timer: Timer?) {
+				self.clientAddress = client.map { UInt(bitPattern: $0) }
+				self.timerIdentity = timer.map { ObjectIdentifier($0) }
 			}
 		}
 
 		private var context: Context?
 
-		func prepare(from manager: DiscordManager) {
-			context = Context(from: manager)
+		@MainActor
+		func prepare(from manager: DiscordManager) async {
+			// Access MainActor isolated properties safely
+			let clientPtr = manager.client
+			let timer = manager.updateTimer
+
+			context = Context(
+				client: clientPtr,
+				timer: timer
+			)
 		}
 
 		func cleanup() async {
@@ -818,15 +826,10 @@ public final class DiscordManager: ObservableObject {
 	deinit {
 		let actor = CleanupActor()
 
-		// Make cleanup task Sendable
-		@Sendable func cleanup() async {
-			await MainActor.run { [weak self] in
-				guard let self = self else { return }
-				await actor.prepare(from: self)
-				await actor.cleanup()
-			}
+		// Create a detached cleanup task
+		Task.detached { [actor] in
+			await actor.prepare(from: self)
+			await actor.cleanup()
 		}
-
-		Task.detached(operation: cleanup)
 	}
 }
