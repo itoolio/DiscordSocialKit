@@ -853,22 +853,18 @@ public final class DiscordManager: ObservableObject {
 		}
 	}
 
-	// Add a separate MainActor-isolated method for cleanup preparation
+	// Static helper for cleanup to avoid capturing self
 	@MainActor
-	private func captureCleanupValues() -> (UInt?, ObjectIdentifier?) {
-		// Safely capture MainActor-isolated properties
-		let clientAddress = client.map { UInt(bitPattern: $0) }
-		let timerIdentifier = updateTimer.map { ObjectIdentifier($0) }
-		return (clientAddress, timerIdentifier)
-	}
+	private static func performCleanup(
+		for manager: DiscordManager,
+		with actor: CleanupActor
+	) {
+		// Extract values while we have access to the manager
+		let clientAddress = manager.client.map { UInt(bitPattern: $0) }
+		let timerIdentifier = manager.updateTimer.map { ObjectIdentifier($0) }
 
-	// Add MainActor-isolated cleanup initiator
-	@MainActor
-	private func initiateCleanup(actor: CleanupActor) {
-		let values = captureCleanupValues()
-
-		// Schedule cleanup without capturing self
-		Task.detached { [clientAddress = values.0, timerIdentifier = values.1, actor] in
+		// Schedule cleanup without capturing manager
+		Task.detached {
 			await actor.cleanupResources(
 				clientAddress: clientAddress,
 				timerIdentifier: timerIdentifier
@@ -877,13 +873,12 @@ public final class DiscordManager: ObservableObject {
 	}
 
 	deinit {
-		// Create the actor
-		let cleanupActor = CleanupActor()
+		let actor = CleanupActor()
 
-		// Schedule cleanup on MainActor (since we can't access properties directly)
-		// This uses a synchronous approach to ensure cleanup happens
-		Task { @MainActor in
-			initiateCleanup(actor: cleanupActor)
+		// Use unowned self to indicate we don't extend lifetime
+		Task { @MainActor [unowned self, actor] in
+			// Use static method to avoid capturing self in nested task
+			Self.performCleanup(for: self, with: actor)
 		}
 	}
 }
