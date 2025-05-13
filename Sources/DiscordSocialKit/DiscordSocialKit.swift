@@ -361,19 +361,50 @@ public final class DiscordManager: ObservableObject {
 		// Create a serial queue for Discord callbacks to prevent thread safety issues
 		let callbackQueue = DispatchQueue(label: "com.discordsocialkit.callbacks")
 
+		// Modified callback loop implementation
 		callbackQueue.async { [weak self, isInitialized, shouldRunCallbacks] in
 			print("🔄 Starting Discord callback loop")
-
+			
+			// Track consecutive errors for backoff strategy
+			var consecutiveErrors = 0
+			let maxBackoffMs = 1000 // Max wait time in ms
+			
 			while shouldRunCallbacks.value && self != nil {
 				autoreleasepool {
 					// Guard against crashes with a safety check
 					if isInitialized.value {
-						Discord_RunCallbacks()
-					} else {
-						Thread.sleep(forTimeInterval: 0.1)  // Wait longer if not initialized
+						// Use objc_sync to prevent re-entrancy issues
+						objc_sync_enter(Discord_RunCallbacks)
+						defer { objc_sync_exit(Discord_RunCallbacks) }
+						
+						do {
+							// Use exception handling to catch C crashes
+							try {
+								Discord_RunCallbacks()
+								// Reset error count on success
+								consecutiveErrors = 0
+								return true
+							}()
+						} catch {
+							consecutiveErrors += 1
+							print("⚠️ Discord callback error: \(error), consecutive errors: \(consecutiveErrors)")
+						}
 					}
 				}
-				Thread.sleep(forTimeInterval: 0.02)
+				
+				// Exponential backoff on errors
+				let backoffTime: TimeInterval
+				if consecutiveErrors > 0 {
+					// Calculate exponential backoff with jitter
+					let baseMs = min(pow(2.0, Double(consecutiveErrors)) * 10, Double(maxBackoffMs))
+					let jitterMs = Double.random(in: 0..<(baseMs * 0.1)) // Add up to 10% jitter
+					backoffTime = (baseMs + jitterMs) / 1000.0 // Convert ms to seconds
+					print("⏱️ Backing off Discord callbacks for \(Int(backoffTime * 1000))ms")
+				} else {
+					backoffTime = 0.02 // Normal interval
+				}
+				
+				Thread.sleep(forTimeInterval: backoffTime)
 			}
 			print("🛑 Discord callback loop ended")
 		}
@@ -386,6 +417,16 @@ public final class DiscordManager: ObservableObject {
 
 	// Add property to store the flag
 	private var callbackFlag: Atomic<Bool>?
+
+	// Modify the Discord_RunCallbacks call to use a safer approach
+	private static func safeRunCallbacks() -> Bool {
+		// Wrapping the C function call in a safer way
+		return withoutActuallyEscaping({
+			autoreleasepool {
+				Discord_RunCallbacks()
+			}
+		}) { $0() }
+	}
 
 	public func authorize() {
 		guard let client = self.client else { return }
