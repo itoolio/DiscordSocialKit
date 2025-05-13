@@ -740,7 +740,40 @@ public final class DiscordManager: ObservableObject {
 
 		Task { @MainActor [weak manager] in
 			guard let manager = manager else { return }
-			// Use sendable copies in implementation...
+
+			guard let resultData = resultData else {
+				manager.handleError("Authentication failed: No result received")
+				return
+			}
+
+			if !Discord_ClientResult_Successful(resultData) {
+				var errorStr = Discord_String()
+				Discord_ClientResult_Error(result, &errorStr)
+				if let errorPtr = errorStr.ptr,
+					let messageStr = String(
+						bytes: UnsafeRawBufferPointer(
+							start: errorPtr,
+							count: Int(errorStr.size)
+						),
+						encoding: .utf8
+					)
+				{
+					manager.handleError("Authentication Error: \(messageStr)")
+				} else {
+					manager.handleError("Authentication failed with unknown error")
+				}
+				return
+			}
+
+			guard var verifier = manager.verifier else {
+				manager.handleError("❌ Authentication Error: No verifier available")
+				return
+			}
+
+			// Create verifier string locally
+			var verifierStr = Discord_String()
+			Discord_AuthorizationCodeVerifier_Verifier(&verifier, &verifierStr)
+
 			Discord_Client_GetToken(
 				manager.client,
 				manager.applicationId,
@@ -758,13 +791,15 @@ public final class DiscordManager: ObservableObject {
 	private let cleanupActor = CleanupActor()
 
 	deinit {
-		// Capture values before cleanup
 		let clientCopy = client
 		let timerCopy = updateTimer
 
-		// Use actor for cleanup
-		Task {
-			await cleanupActor.cleanup(client: clientCopy, timer: timerCopy)
+		// Create a local cleanup actor that won't retain self
+		let actor = CleanupActor()
+
+		// Schedule cleanup without capturing self
+		Task.detached {
+			await actor.cleanup(client: clientCopy, timer: timerCopy)
 		}
 	}
 }
