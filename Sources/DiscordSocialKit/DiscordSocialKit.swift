@@ -73,7 +73,7 @@ public final class DiscordManager: ObservableObject {
 			currentTime: TimeInterval,
 			artworkURL: URL?
 		)? = nil
-	private let presenceUpdateInterval: TimeInterval = 5
+	private let presenceUpdateInterval: TimeInterval = 15
     
 	private func fetchUserInfo() {
 		guard let client = getClient() else { return }
