@@ -58,18 +58,24 @@ public final class DiscordManager: ObservableObject {
 		}
 	}
 
-	// Add Sendable cleanup data structure
-	private struct CleanupData: Sendable {
-		let clientPtr: UnsafeMutableRawPointer?
-		let timer: Timer?
+	// Update cleanup data structure to be Sendable-compliant
+	private struct CleanupData {
+		private let clientAddress: UInt?  // Store raw address instead of pointer
+		private let timerRetained: Unmanaged<Timer>?  // Retain timer explicitly
 
 		init(client: UnsafeMutablePointer<Discord_Client>?, timer: Timer?) {
-			self.clientPtr = UnsafeMutableRawPointer(client)
-			self.timer = timer
+			self.clientAddress = client.map { UInt(bitPattern: $0) }
+			self.timerRetained = timer.map { Unmanaged.passRetained($0) }
 		}
 
 		var client: UnsafeMutablePointer<Discord_Client>? {
-			clientPtr.map { UnsafeMutablePointer<Discord_Client>($0) }
+			guard let address = clientAddress else { return nil }
+			return UnsafeMutablePointer<Discord_Client>(bitPattern: address)
+		}
+
+		var timer: Timer? {
+			defer { timerRetained?.release() }  // Release retained timer
+			return timerRetained?.takeUnretainedValue()
 		}
 	}
 
@@ -103,7 +109,7 @@ public final class DiscordManager: ObservableObject {
 			currentTime: TimeInterval,
 			artworkURL: URL?
 		)? = nil
-	private let presenceUpdateInterval: TimeInterval = 5
+	private let presenceUpdateInterval: TimeInterval = 15
 
 	private func fetchUserInfo() {
 		guard let client = client else { return }
@@ -800,21 +806,16 @@ public final class DiscordManager: ObservableObject {
 	}
 
 	deinit {
-		// Create cleanup data with sendable pointer types
+		// Create cleanup data with retained values
 		let data = CleanupData(
 			client: client,
 			timer: updateTimer
 		)
 
-		// Capture values before cleanup
-		let cleanupActor = CleanupActor()
-
-		// Create detached task with sendable data
+		// Perform cleanup on background
+		let actor = CleanupActor()
 		Task.detached { [data] in
-			await cleanupActor.cleanup(
-				client: data.client,
-				timer: data.timer
-			)
+			await actor.cleanup(client: data.client, timer: data.timer)
 		}
 	}
 }
