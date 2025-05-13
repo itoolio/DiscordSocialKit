@@ -620,6 +620,25 @@ public final class DiscordManager: ObservableObject {
 		await stopUpdates()  // Clear any existing timer first
 
 		print("▶️ Starting presence updates")
+		
+		// Perform an immediate update if we have playback info
+		if let info = self.currentPlaybackInfo,
+			self.isAuthenticated,
+			self.isReady,
+			self.isRunning
+		{
+			print("⚡ Performing immediate presence update")
+			await self.updateRichPresence(
+				id: info.id,
+				title: info.title,
+				artist: info.artist,
+				duration: info.duration,
+				currentTime: info.currentTime,
+				artworkURL: info.artworkURL
+			)
+		}
+		
+		// Set up timer for periodic updates
 		updateTimer = Timer.scheduledTimer(withTimeInterval: presenceUpdateInterval, repeats: true)
 		{ [weak self] _ in
 			guard let self = self else { return }
