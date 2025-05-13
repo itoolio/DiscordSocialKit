@@ -744,17 +744,89 @@ public final class DiscordManager: ObservableObject {
 	private let tokenCallback: Discord_Client_TokenExchangeCallback = {
 		result, token, refreshToken, tokenType, expiresIn, scope, userData in
 
-		let resultData = UnsafeMutablePointer<Discord_ClientResult>(result)?.pointee
-		let tokenData = Discord_String(ptr: token.ptr, size: token.size)
-		let refreshData = Discord_String(ptr: refreshToken.ptr, size: refreshToken.size)
-		let expiresInValue = expiresIn
-		let userDataValue = userData
+		// Create Sendable token data
+		struct TokenData: Sendable {
+			let accessToken: String
+			let refreshToken: String
+			let expiresIn: TimeInterval
+			let userDataPointer: UInt
 
-		guard let userDataValue = userDataValue else { return }
-		let manager = Unmanaged<DiscordManager>.fromOpaque(userDataValue).takeUnretainedValue()
+			init?(
+				token: Discord_String,
+				refreshToken: Discord_String,
+				expiresIn: UInt32,
+				userData: UnsafeMutableRawPointer?
+			) {
+				guard let userData = userData,
+					let tokenPtr = token.ptr,
+					let refreshPtr = refreshToken.ptr,
+					let tokenStr = String(
+						bytes: UnsafeRawBufferPointer(start: tokenPtr, count: Int(token.size)),
+						encoding: .utf8),
+					let refreshStr = String(
+						bytes: UnsafeRawBufferPointer(
+							start: refreshPtr, count: Int(refreshToken.size)),
+						encoding: .utf8)
+				else {
+					return nil
+				}
 
-		Task { @MainActor [weak manager] in
+				self.accessToken = tokenStr
+				self.refreshToken = refreshStr
+				self.expiresIn = TimeInterval(expiresIn)
+				self.userDataPointer = UInt(bitPattern: userData)
+			}
+
+			var userDataRaw: UnsafeMutableRawPointer {
+				UnsafeMutableRawPointer(bitPattern: userDataPointer)!
+			}
+		}
+
+		guard
+			let tokenData = TokenData(
+				token: token,
+				refreshToken: refreshToken,
+				expiresIn: expiresIn,
+				userData: userData
+			)
+		else {
+			print("❌ Failed to parse token data from Discord")
+			return
+		}
+
+		let manager = Unmanaged<DiscordManager>.fromOpaque(userData!).takeUnretainedValue()
+		print("🎟️ Received new token from Discord")
+
+		// Use Task for async work
+		Task { @MainActor [weak manager, tokenData] in
 			guard let manager = manager else { return }
+
+			// First save the token
+			await manager.updateStoredToken(
+				accessToken: tokenData.accessToken,
+				refreshToken: tokenData.refreshToken,
+				expiresIn: tokenData.expiresIn
+			)
+
+			// Then update client with the token
+			print("🔑 Updating client with new token...")
+			var accessStr = manager.makeDiscordString(from: tokenData.accessToken)
+
+			// Use the native C API to update token and connect
+			Discord_Client_UpdateToken(
+				manager.client,
+				Discord_AuthorizationTokenType_Bearer,
+				accessStr,
+				{ _, innerUserData in
+					guard let innerUserData = innerUserData else { return }
+					let innerManager = Unmanaged<DiscordManager>.fromOpaque(innerUserData)
+						.takeUnretainedValue()
+					print("🔌 Connecting with new token...")
+					Discord_Client_Connect(innerManager.client)
+				},
+				nil,
+				tokenData.userDataRaw  // Use the captured userData
+			)
 		}
 	}
 
