@@ -6,10 +6,31 @@
 //
 
 import Combine
+import CoreFoundation
 import Foundation
 internal import MusadoraKit
 import SwiftData
 import discord_partner_sdk
+
+// Timer handling extensions
+extension Timer {
+	fileprivate static var currentTimers: [Timer] {
+		// Get timers from all common modes
+		let modes = [RunLoop.Mode.common, .default, .tracking]
+		return modes.flatMap { mode in
+			RunLoop.main.scheduledTimers(forMode: mode)
+		}
+	}
+}
+
+extension RunLoop {
+	fileprivate func scheduledTimers(forMode mode: RunLoop.Mode) -> [Timer] {
+		guard let modeObj = CFRunLoopCopyAllTimers(getCFRunLoop(), mode.cf) else {
+			return []
+		}
+		return (modeObj.takeRetainedValue() as! [Timer])
+	}
+}
 
 @MainActor
 public final class DiscordManager: ObservableObject {
@@ -42,11 +63,10 @@ public final class DiscordManager: ObservableObject {
 	private var cachedUserData: UserData?
 
 	// Update CleanupActor to be Sendable
-	private actor CleanupActor: Sendable {
-		// Make cleanup context fully Sendable
-		private struct CleanupContext: Sendable {
+	private actor CleanupActor: @unchecked Sendable {
+		struct Context: Sendable {
 			let clientAddress: UInt?
-			let timerIdentity: ObjectIdentifier?  // Store timer identity instead of timer
+			let timerIdentity: ObjectIdentifier?
 
 			init(client: UnsafeMutablePointer<Discord_Client>?, timer: Timer?) {
 				self.clientAddress = client.map { UInt(bitPattern: $0) }
@@ -54,18 +74,17 @@ public final class DiscordManager: ObservableObject {
 			}
 		}
 
-		// Keep track of timers to invalidate
-		private var timersToInvalidate: Set<ObjectIdentifier> = []
-
-		private func invalidateTimer(_ identity: ObjectIdentifier) {
-			timersToInvalidate.insert(identity)
+		private func cleanupTimer(_ timer: Timer?) async {
+			await MainActor.run {
+				timer?.invalidate()
+			}
 		}
 
-		func cleanup(_ context: CleanupContext) async {
+		private func cleanup(_ context: Context) async {
 			// Handle timer cleanup on main thread
 			if let timerIdentity = context.timerIdentity {
 				await MainActor.run {
-					Timer.scheduledTimers.first { timer in
+					Timer.currentTimers.first { timer in
 						ObjectIdentifier(timer) == timerIdentity
 					}?.invalidate()
 				}
@@ -81,50 +100,6 @@ public final class DiscordManager: ObservableObject {
 				Discord_Client_Drop(client)
 				client.deallocate()
 			}
-		}
-	}
-
-	// Add Timer extension to support cleanup
-	extension Timer {
-		fileprivate static var scheduledTimers: [Timer] {
-			RunLoop.main.scheduledTimers
-		}
-	}
-
-	extension RunLoop {
-		fileprivate var scheduledTimers: [Timer] {
-			// Get all modes' timers
-			allModes.flatMap { mode in
-				guard let modeObj = CFRunLoopCopyAllTimers(getCFRunLoop(), mode.cf) else {
-					return []
-				}
-				return (modeObj.takeRetainedValue() as! [Timer])
-			}
-		}
-
-		fileprivate var allModes: [RunLoop.Mode] {
-			[.common, .default, .tracking]
-		}
-	}
-
-	// Update cleanup data structure to be Sendable-compliant
-	private struct CleanupData {
-		private let clientAddress: UInt?  // Store raw address instead of pointer
-		private let timerRetained: Unmanaged<Timer>?  // Retain timer explicitly
-
-		init(client: UnsafeMutablePointer<Discord_Client>?, timer: Timer?) {
-			self.clientAddress = client.map { UInt(bitPattern: $0) }
-			self.timerRetained = timer.map { Unmanaged.passRetained($0) }
-		}
-
-		var client: UnsafeMutablePointer<Discord_Client>? {
-			guard let address = clientAddress else { return nil }
-			return UnsafeMutablePointer<Discord_Client>(bitPattern: address)
-		}
-
-		var timer: Timer? {
-			defer { timerRetained?.release() }  // Release retained timer
-			return timerRetained?.takeUnretainedValue()
 		}
 	}
 
@@ -855,13 +830,11 @@ public final class DiscordManager: ObservableObject {
 	}
 
 	deinit {
-		// Create cleanup context with retained timer
-		let context = CleanupActor.CleanupContext(
+		let context = CleanupActor.Context(
 			client: client,
 			timer: updateTimer
 		)
 
-		// Create actor and schedule cleanup
 		let actor = CleanupActor()
 		Task.detached { [context] in
 			await actor.cleanup(context)
