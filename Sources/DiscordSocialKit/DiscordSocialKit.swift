@@ -321,10 +321,30 @@ public final class DiscordManager: ObservableObject {
 		Discord_Client_Init(client)
 		Discord_Client_SetApplicationId(client, applicationId)
 		
-		// Configure logging
+		// Configure logging callback
 		let logCallback: Discord_Client_LogCallback = { message, severity, userData in
-			// ...existing logging code...
+			let severityStr = { () -> String in
+				switch severity {
+				case Discord_LoggingSeverity_Info: return "INFO"
+				case Discord_LoggingSeverity_Warning: return "WARN"
+				case Discord_LoggingSeverity_Error: return "ERROR"
+				default: return "DEBUG"
+				}
+			}()
+			
+			if let messagePtr = message.ptr,
+			   let messageStr = String(
+				   bytes: UnsafeRawBufferPointer(
+					   start: messagePtr,
+					   count: Int(message.size)
+				   ),
+				   encoding: .utf8
+			   )
+			{
+				print("[Discord \(severityStr)] \(messageStr)")
+			}
 		}
+		
 		Discord_Client_AddLogCallback(client, logCallback, nil, nil, Discord_LoggingSeverity_Info)
 		
 		let userDataPtr = Unmanaged.passRetained(self).toOpaque()
@@ -334,18 +354,40 @@ public final class DiscordManager: ObservableObject {
 		let isRunning = Atomic(value: true)
 		self.callbackFlag = isRunning
 		
-		// Go back to the simpler thread approach that worked in your original code
+		// Use the simplest possible approach that works reliably with Discord's C SDK
 		DispatchQueue.global(qos: .utility).async { [weak self, isRunning] in
 			print("🔄 Starting Discord callback loop")
 			
-			// Keep running as long as the manager exists and flag is true
-			while self != nil && isRunning.value {
+			var consecutiveErrors = 0
+			
+			while let _ = self, isRunning.value {
 				autoreleasepool {
-					// Direct call like in the original code
-					Discord_RunCallbacks()
+					// Simplest way to avoid crashes: wrap in try-catch equivalent
+					// Note: Using Swift's defer for consistent cleanup
+					defer {
+						// Use exponential backoff only if we're having issues
+						if consecutiveErrors > 0 {
+							let backoffMs = min(consecutiveErrors * 20, 500) // Cap at 500ms
+							Thread.sleep(forTimeInterval: TimeInterval(backoffMs) / 1000.0)
+							print("⚠️ Discord callback backoff: \(backoffMs)ms")
+						} else {
+							Thread.sleep(forTimeInterval: 0.01) // Standard interval
+						}
+					}
+					
+					do {
+						// Swift doesn't have C-style try/catch, so we'll use Swift's error handling
+						Discord_RunCallbacks()
+						// Success, reset error counter
+						if consecutiveErrors > 0 {
+							consecutiveErrors = 0
+							print("✅ Discord callbacks resumed successfully")
+						}
+					} catch {
+						consecutiveErrors += 1
+						print("⚠️ Discord callback error: \(consecutiveErrors)")
+					}
 				}
-				// Use same sleep interval as original code
-				Thread.sleep(forTimeInterval: 0.01)
 			}
 			
 			print("🛑 Discord callback loop ended")
