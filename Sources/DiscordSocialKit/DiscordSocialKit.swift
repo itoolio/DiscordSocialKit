@@ -6,56 +6,19 @@
 //
 
 import Combine
-import CoreFoundation
 import Foundation
 internal import MusadoraKit
 import SwiftData
 import discord_partner_sdk
 
-// Timer utilities at file scope
-extension Timer {
-	fileprivate static func currentMainThreadTimers() -> [Timer] {
-		RunLoop.main.scheduledTimers
-	}
-}
-
-extension RunLoop {
-	fileprivate var scheduledTimers: [Timer] {
-		// Safe access to current run loop's timers
-		let common = self.description
-		return common.isEmpty ? [] : []  // Placeholder - actual timer tracking handled by the actor
-	}
-}
-
-private final class Atomic<T>: @unchecked Sendable {
-	private let lock = NSLock()
-	private var _value: T
-
-	init(value: T) {
-		self._value = value
-	}
-
-	var value: T {
-		get {
-			lock.lock()
-			defer { lock.unlock() }
-			return _value
-		}
-		set {
-			lock.lock()
-			_value = newValue
-			lock.unlock()
-		}
-	}
-}
-
 @MainActor
 public final class DiscordManager: ObservableObject {
-	@MainActor private var client: UnsafeMutablePointer<Discord_Client>?
+	private var client: UnsafeMutablePointer<Discord_Client>?
 	private var applicationId: UInt64
 	private var verifier: Discord_AuthorizationCodeVerifier?
 	private var modelContext: ModelContext?
 
+	// Add artwork cache
 	private var artworkCache: [String: URL] = [:]
 
 	@Published public private(set) var isReady = false
@@ -64,10 +27,11 @@ public final class DiscordManager: ObservableObject {
 	@Published public private(set) var isAuthorizing = false
 	@Published public var isRunning = false
 	@Published public private(set) var username: String?
-	@Published public private(set) var globalName: String?
+	@Published public private(set) var globalName: String?  // Add display name
 	@Published public private(set) var userId: UInt64 = 0
 	@Published public private(set) var avatarURL: URL?
 
+	// Add user data cache structure
 	private struct UserData {
 		var username: String
 		var globalName: String?
@@ -75,71 +39,6 @@ public final class DiscordManager: ObservableObject {
 		var userId: UInt64
 	}
 	private var cachedUserData: UserData?
-
-	private actor CleanupActor: @unchecked Sendable {
-		private struct CleanupData: Sendable {
-			struct PointerData: Sendable {
-				let address: UInt
-			}
-			let clientData: PointerData?
-			let timerId: ObjectIdentifier?
-		}
-
-		private var cleanupData: CleanupData?
-
-		private nonisolated func prepareCleanup(
-			client: UnsafeMutablePointer<Discord_Client>?,
-			timer: Timer?
-		) -> CleanupData {
-			CleanupData(
-				clientData: client.map { CleanupData.PointerData(address: UInt(bitPattern: $0)) },
-				timerId: timer.map(ObjectIdentifier.init)
-			)
-		}
-
-		// Fix access control to be private
-		private func initialize(_ data: CleanupData) {
-			cleanupData = data
-		}
-
-		// Add a public entry point that takes raw values
-		func cleanupResources(
-			clientAddress: UInt?,
-			timerIdentifier: ObjectIdentifier?
-		) async {
-			let data = CleanupData(
-				clientData: clientAddress.map { CleanupData.PointerData(address: $0) },
-				timerId: timerIdentifier
-			)
-
-			self.cleanupData = data
-			await cleanup()
-		}
-
-		func cleanup() async {
-			guard let data = cleanupData else { return }
-
-			// Handle timer on main thread
-			if let timerId = data.timerId {
-				await MainActor.run {
-					Timer.currentMainThreadTimers()
-						.first { ObjectIdentifier($0) == timerId }?
-						.invalidate()
-				}
-			}
-
-			// Handle client cleanup
-			if let clientData = data.clientData,
-				let client = UnsafeMutablePointer<Discord_Client>(bitPattern: clientData.address)
-			{
-				var activity = Discord_Activity()
-				Discord_Activity_Init(&activity)
-				Discord_Client_UpdateRichPresence(client, &activity, nil, nil, nil)
-				Discord_Client_Drop(client)
-				client.deallocate()
-			}
-		}
-	}
 
 	public func startPresenceUpdates() {
 		print("🎮 Starting Discord Rich Presence")
@@ -157,7 +56,7 @@ public final class DiscordManager: ObservableObject {
 		}
 	}
 
-	@MainActor private var updateTimer: Timer?
+	private var updateTimer: Timer?
 	private var lastId: String = ""
 	private var lastTitle: String = ""
 	private var lastArtist: String = ""
@@ -171,17 +70,19 @@ public final class DiscordManager: ObservableObject {
 			currentTime: TimeInterval,
 			artworkURL: URL?
 		)? = nil
-	private let presenceUpdateInterval: TimeInterval = 15
-
+	private let presenceUpdateInterval: TimeInterval = 5
+    
 	private func fetchUserInfo() {
 		guard let client = client else { return }
 
 		var userHandle = Discord_UserHandle(opaque: nil)
 		Discord_Client_GetCurrentUser(client, &userHandle)
 
+		// Get user ID first
 		let userId = Discord_UserHandle_Id(&userHandle)
 		print("🆔 Got user ID: \(userId)")
 
+		// Get username
 		var usernameStr = Discord_String()
 		let _ = Discord_UserHandle_Username(&userHandle, &usernameStr)
 
@@ -200,6 +101,7 @@ public final class DiscordManager: ObservableObject {
 
 		print("👤 Got username: \(username)")
 
+		// Get display name
 		var displayNameStr = Discord_String()
 		let _ = Discord_UserHandle_DisplayName(&userHandle, &displayNameStr)
 
@@ -218,6 +120,7 @@ public final class DiscordManager: ObservableObject {
 
 		print("📝 Got display name: \(globalName ?? "none")")
 
+		// Get avatar URL
 		var avatarUrlStr = Discord_String()
 		let _ = Discord_UserHandle_AvatarUrl(
 			&userHandle,
@@ -243,6 +146,7 @@ public final class DiscordManager: ObservableObject {
 
 		print("🖼️ Got avatar URL: \(avatarURL?.absoluteString ?? "none")")
 
+		// Cache and update
 		let userData = UserData(
 			username: username,
 			globalName: globalName,
@@ -314,14 +218,15 @@ public final class DiscordManager: ObservableObject {
 
 	private func setupClient() {
 		print("🚀 Initializing Discord SDK...")
-		
+
+		// Create client and retain pointer
 		self.client = UnsafeMutablePointer<Discord_Client>.allocate(capacity: 1)
 		guard let client = self.client else { return }
-		
+
 		Discord_Client_Init(client)
 		Discord_Client_SetApplicationId(client, applicationId)
-		
-		// Configure logging
+
+		// Set up logging callback with proper string conversion
 		let logCallback: Discord_Client_LogCallback = { message, severity, userData in
 			let severityStr = { () -> String in
 				switch severity {
@@ -331,52 +236,43 @@ public final class DiscordManager: ObservableObject {
 				default: return "DEBUG"
 				}
 			}()
-			
+
 			if let messagePtr = message.ptr,
-			   let messageStr = String(
-				   bytes: UnsafeRawBufferPointer(
-					   start: messagePtr,
-					   count: Int(message.size)
-				   ),
-				   encoding: .utf8
-			   )
+				let messageStr = String(
+					bytes: UnsafeRawBufferPointer(
+						start: messagePtr,
+						count: Int(message.size)
+					),
+					encoding: .utf8
+				)
 			{
 				print("[Discord \(severityStr)] \(messageStr)")
 			}
 		}
-		
 		Discord_Client_AddLogCallback(client, logCallback, nil, nil, Discord_LoggingSeverity_Info)
-		
+
 		let userDataPtr = Unmanaged.passRetained(self).toOpaque()
 		Discord_Client_SetStatusChangedCallback(client, statusCallback, nil, userDataPtr)
-		
-		let isRunning = Atomic(value: true)
-		self.callbackFlag = isRunning
-		
-		DispatchQueue.global(qos: .utility).async { [weak self, isRunning] in
-			print("🔄 Starting Discord callback loop")
-			
-			while let _ = self, isRunning.value {
+
+		// Start callback loop
+		DispatchQueue.global(qos: .utility).async { [weak self] in
+			while self != nil {
 				autoreleasepool {
 					Discord_RunCallbacks()
 				}
 				Thread.sleep(forTimeInterval: 0.01)
 			}
-			
-			print("🛑 Discord callback loop ended")
 		}
-		
+
 		print("✨ Discord SDK initialized successfully")
 	}
-
-	// Add property to store the flag
-	private var callbackFlag: Atomic<Bool>?
 
 	public func authorize() {
 		guard let client = self.client else { return }
 		print("Starting auth flow...")
 		isAuthorizing = true
 
+		// Create and retain verifier
 		let verifier = UnsafeMutablePointer<Discord_AuthorizationCodeVerifier>.allocate(capacity: 1)
 		Discord_Client_CreateAuthorizationCodeVerifier(client, verifier)
 		self.verifier = verifier.pointee
@@ -476,6 +372,7 @@ public final class DiscordManager: ObservableObject {
 			return
 		}
 
+		// Skip empty updates
 		if title.isEmpty || artist.isEmpty {
 			print("⚠️ Skipping empty rich presence update")
 			return
@@ -490,11 +387,14 @@ public final class DiscordManager: ObservableObject {
 		var activity = Discord_Activity()
 		Discord_Activity_Init(&activity)
 
+		// Set activity type first
 		Discord_Activity_SetType(&activity, Discord_ActivityTypes_Playing)
 
+		// Set up asset
 		var assets = Discord_ActivityAssets()
 		Discord_ActivityAssets_Init(&assets)
 
+		// Check cache first
 		if let cachedArtwork = artworkCache[id] {
 			var artworkStr = makeDiscordString(from: cachedArtwork.absoluteString)
 			var hoverText = makeDiscordString(from: "\(title) by \(artist)")
@@ -502,11 +402,13 @@ public final class DiscordManager: ObservableObject {
 			Discord_ActivityAssets_SetLargeImage(&assets, &artworkStr)
 			Discord_ActivityAssets_SetLargeText(&assets, &hoverText)
 		} else {
+			// Fetch and cache if not found
 			do {
 				let song = try await MCatalog.song(id: MusicItemID(rawValue: id), fetch: [.albums])
 				if let artworkURL = song.albums?.first?.artwork?.url(width: 600, height: 600),
 					validateAssetURL(artworkURL)
 				{
+					// Cache the URL
 					artworkCache[id] = artworkURL
 
 					var artworkStr = makeDiscordString(from: artworkURL.absoluteString)
@@ -520,29 +422,35 @@ public final class DiscordManager: ObservableObject {
 			}
 		}
 
+		// Add assets to activity
 		Discord_Activity_SetAssets(&activity, &assets)
 
+		// Create and set name
 		let namePtr = makeStringBuffer(from: "Apple Music").ptr
 		var nameStr = Discord_String()
 		nameStr.ptr = namePtr
 		nameStr.size = Int(Int32(4))
 		Discord_Activity_SetName(&activity, nameStr)
 
+		// Set details (title)
 		let detailsPtr = makeStringBuffer(from: title).ptr
 		var detailsStr = Discord_String()
 		detailsStr.ptr = detailsPtr
 		detailsStr.size = Int(Int32(title.utf8.count))
 		Discord_Activity_SetDetails(&activity, &detailsStr)
 
+		// Set state (artist)
 		let statePtr = makeStringBuffer(from: "by \(artist)").ptr
 		var stateStr = Discord_String()
 		stateStr.ptr = statePtr
 		stateStr.size = Int(Int32(("by \(artist)").utf8.count))
 		Discord_Activity_SetState(&activity, &stateStr)
 
+		// Set timestamps safely
 		var timestamps = Discord_ActivityTimestamps()
 		Discord_ActivityTimestamps_Init(&timestamps)
 
+		// Convert all times to milliseconds
 		let now = Date().timeIntervalSince1970
 		let startTime = UInt64((now - currentTime) * 1000)
 		let endTime = UInt64((now - currentTime + duration) * 1000)
@@ -553,6 +461,7 @@ public final class DiscordManager: ObservableObject {
 		Discord_ActivityTimestamps_SetEnd(&timestamps, endTime)
 		Discord_Activity_SetTimestamps(&activity, &timestamps)
 
+		// Create context for cleanup
 		let context = RichPresenceContext(
 			namePtr: namePtr,
 			detailsPtr: detailsPtr,
@@ -580,7 +489,7 @@ public final class DiscordManager: ObservableObject {
 
 	public func clearPlayback() {
 		currentPlaybackInfo = nil
-		artworkCache.removeAll()
+		artworkCache.removeAll()  // Clear cache when playback stops
 		clearRichPresence()
 	}
 
@@ -613,6 +522,7 @@ public final class DiscordManager: ObservableObject {
 			do {
 				print("💾 Saving new token...")
 
+				// Clear existing tokens
 				let descriptor = FetchDescriptor<DiscordToken>()
 				let existingTokens = try context.fetch(descriptor)
 				for token in existingTokens {
@@ -620,12 +530,14 @@ public final class DiscordManager: ObservableObject {
 					context.delete(token)
 				}
 
+				// Create new token
 				let token = DiscordToken(
 					accessToken: accessToken,
 					refreshToken: refreshToken,
 					expiresIn: expiresIn
 				)
 
+				// Save new token
 				context.insert(token)
 				try context.save()
 
@@ -674,9 +586,11 @@ public final class DiscordManager: ObservableObject {
 
 	private func stopUpdates() async {
 		print("⏹️ Stopping presence updates")
+		// Stop timer first
 		updateTimer?.invalidate()
 		updateTimer = nil
 
+		// Clear state
 		currentPlaybackInfo = nil
 		lastTitle = ""
 		lastArtist = ""
@@ -684,11 +598,12 @@ public final class DiscordManager: ObservableObject {
 		lastDuration = 0
 		lastCurrentTime = 0
 
+		// Clear presence last
 		clearRichPresence()
 	}
 
 	private func startUpdates() async {
-		await stopUpdates()
+		await stopUpdates()  // Clear any existing timer first
 
 		print("▶️ Starting presence updates")
 		updateTimer = Timer.scheduledTimer(withTimeInterval: presenceUpdateInterval, repeats: true)
@@ -724,7 +639,7 @@ public final class DiscordManager: ObservableObject {
 
 	public func refreshTokenIfNeeded() async {
 		guard let token = loadExistingToken(),
-			let refreshToken = token.refreshToken,
+			let refreshToken = token.refreshToken,  // Now correctly handling optional
 			token.needsRefresh
 		else {
 			print("⚠️ No valid refresh token available")
@@ -746,7 +661,7 @@ public final class DiscordManager: ObservableObject {
 	public func setupWithExistingToken() async {
 		await MainActor.run {
 			guard let token = loadExistingToken(),
-				let accessToken = token.accessToken
+				let accessToken = token.accessToken  // Now correctly handling optional
 			else {
 				print("⚠️ No existing token found or token invalid")
 				return
@@ -762,10 +677,10 @@ public final class DiscordManager: ObservableObject {
 					client,
 					Discord_AuthorizationTokenType_Bearer,
 					accessStr,
-					{ _, userData in
-						guard let userData = userData else { return }
-						let manager = Unmanaged<DiscordManager>.fromOpaque(userData)
+					{ result, userData in
+						let manager = Unmanaged<DiscordManager>.fromOpaque(userData!)
 							.takeUnretainedValue()
+						print("🔑 Loaded token from storage, connecting to Discord...")
 						Discord_Client_Connect(manager.client)
 					},
 					nil,
@@ -777,217 +692,160 @@ public final class DiscordManager: ObservableObject {
 
 	private let tokenCallback: Discord_Client_TokenExchangeCallback = {
 		result, token, refreshToken, tokenType, expiresIn, scope, userData in
-
-		// Create Sendable token data
-		struct TokenData: Sendable {
-			let accessToken: String
-			let refreshToken: String
-			let expiresIn: TimeInterval
-			let userDataPointer: UInt
-
-			init?(
-				token: Discord_String,
-				refreshToken: Discord_String,
-				expiresIn: Int32,
-				userData: UnsafeMutableRawPointer?
-			) {
-				guard let userData = userData,
-					let tokenPtr = token.ptr,
-					let refreshPtr = refreshToken.ptr,
-					let tokenStr = String(
-						bytes: UnsafeRawBufferPointer(start: tokenPtr, count: Int(token.size)),
-						encoding: .utf8),
-					let refreshStr = String(
-						bytes: UnsafeRawBufferPointer(
-							start: refreshPtr, count: Int(refreshToken.size)),
-						encoding: .utf8)
-				else {
-					return nil
-				}
-
-				self.accessToken = tokenStr
-				self.refreshToken = refreshStr
-				self.expiresIn = TimeInterval(expiresIn)  // Convert Int32 to TimeInterval
-				self.userDataPointer = UInt(bitPattern: userData)
-			}
-
-			var userDataRaw: UnsafeMutableRawPointer {
-				UnsafeMutableRawPointer(bitPattern: userDataPointer)!
-			}
-		}
-
-		guard
-			let tokenData = TokenData(
-				token: token,
-				refreshToken: refreshToken,
-				expiresIn: expiresIn,
-				userData: userData
-			)
-		else {
-			print("❌ Failed to parse token data from Discord")
-			return
-		}
-
 		let manager = Unmanaged<DiscordManager>.fromOpaque(userData!).takeUnretainedValue()
-		print("🎟️ Received new token from Discord")
 
-		// Use Task for async work
-		Task { @MainActor [weak manager, tokenData] in
-			guard let manager = manager else { return }
+		if let tokenPtr = token.ptr,
+			let refreshPtr = refreshToken.ptr,
+			let tokenStr = String(
+				bytes: UnsafeRawBufferPointer(start: tokenPtr, count: Int(token.size)),
+				encoding: .utf8),
+			let refreshStr = String(
+				bytes: UnsafeRawBufferPointer(start: refreshPtr, count: Int(refreshToken.size)),
+				encoding: .utf8)
+		{
 
-			// First save the token
-			await manager.updateStoredToken(
-				accessToken: tokenData.accessToken,
-				refreshToken: tokenData.refreshToken,
-				expiresIn: tokenData.expiresIn
-			)
+			print("🎟️ Received new token from Discord")
+			Task { @MainActor in
+				await manager.updateStoredToken(
+					accessToken: tokenStr,
+					refreshToken: refreshStr,
+					expiresIn: TimeInterval(expiresIn)
+				)
 
-			// Then update client with the token
-			print("🔑 Updating client with new token...")
-			var accessStr = manager.makeDiscordString(from: tokenData.accessToken)
-
-			// Use the native C API to update token and connect
-			Discord_Client_UpdateToken(
-				manager.client,
-				Discord_AuthorizationTokenType_Bearer,
-				accessStr,
-				{ _, innerUserData in
-					guard let innerUserData = innerUserData else { return }
-					let innerManager = Unmanaged<DiscordManager>.fromOpaque(innerUserData)
-						.takeUnretainedValue()
-					print("🔌 Connecting with new token...")
-					Discord_Client_Connect(innerManager.client)
-				},
-				nil,
-				tokenData.userDataRaw  // Use the captured userData
-			)
+				let accessStr = manager.makeDiscordString(from: tokenStr)
+				Discord_Client_UpdateToken(
+					manager.client,
+					Discord_AuthorizationTokenType_Bearer,
+					accessStr,
+					{ result, userData in
+						let manager = Unmanaged<DiscordManager>.fromOpaque(userData!)
+							.takeUnretainedValue()
+						print("🔑 Token updated, connecting to Discord...")
+						Discord_Client_Connect(manager.client)
+					},
+					nil,
+					userData
+				)
+			}
+		} else {
+			print("❌ Failed to parse token data from Discord")
 		}
 	}
 
 	private let authCallback: Discord_Client_AuthorizationCallback = {
 		result, code, redirectUri, userData in
-
-		// Create Sendable wrapper for auth data
-		struct AuthData: Sendable {
-			struct AuthStrings: Sendable {
-				let code: String
-				let uri: String
-			}
-			let resultSuccess: Bool
-			let strings: AuthStrings
-			// Store user data pointer as numeric value for safety
-			let userDataPointer: UInt
-
-			init?(
-				result: UnsafeMutablePointer<Discord_ClientResult>?,
-				code: Discord_String,
-				uri: Discord_String,
-				userData: UnsafeMutableRawPointer?
-			) {
-				guard let result = result,
-					let userData = userData
-				else { return nil }
-
-				self.resultSuccess = Discord_ClientResult_Successful(result)
-				self.userDataPointer = UInt(bitPattern: userData)
-
-				// Copy strings to ensure thread safety
-				self.strings = AuthStrings(
-					code: String(
-						bytes: UnsafeRawBufferPointer(
-							start: code.ptr,
-							count: Int(code.size)
-						),
-						encoding: .utf8
-					) ?? "",
-					uri: String(
-						bytes: UnsafeRawBufferPointer(
-							start: uri.ptr,
-							count: Int(uri.size)
-						),
-						encoding: .utf8
-					) ?? ""
-				)
-			}
-
-			var userDataRaw: UnsafeMutableRawPointer {
-				UnsafeMutableRawPointer(bitPattern: userDataPointer)!
-			}
-		}
-
-		guard
-			let authData = AuthData(
-				result: result,
-				code: code,
-				uri: redirectUri,
-				userData: userData
-			)
-		else { return }
-
 		let manager = Unmanaged<DiscordManager>.fromOpaque(userData!).takeUnretainedValue()
 
-		Task { @MainActor [weak manager, authData] in
-			guard let manager = manager else { return }
-
-			guard var verifier = manager.verifier else {
-				manager.handleError("❌ Authentication Error: No verifier available")
-				return
-			}
-
-			var localVerifierStr = Discord_String()
-			Discord_AuthorizationCodeVerifier_Verifier(&verifier, &localVerifierStr)
-
-			if !authData.resultSuccess {
-				manager.handleError("Authentication failed")
-				return
-			}
-
-			// Create Discord strings from copied data
-			var codeStr = manager.makeDiscordString(from: authData.strings.code)
-			var uriStr = manager.makeDiscordString(from: authData.strings.uri)
-
-			Discord_Client_GetToken(
-				manager.client,
-				manager.applicationId,
-				codeStr,
-				localVerifierStr,
-				uriStr,
-				manager.tokenCallback,
-				nil,
-				authData.userDataRaw  // Use Sendable-safe user data
-			)
+		guard let result = result else {
+			manager.handleError("Authentication failed: No result received")
+			return
 		}
-	}
 
-	// Static helper for cleanup to avoid capturing self
-	@MainActor
-	private static func performCleanup(
-		for manager: DiscordManager,
-		with actor: CleanupActor
-	) {
-		// Extract values while we have access to the manager
-		let clientAddress = manager.client.map { UInt(bitPattern: $0) }
-		let timerIdentifier = manager.updateTimer.map { ObjectIdentifier($0) }
-
-		// Schedule cleanup without capturing manager
-		Task.detached {
-			await actor.cleanupResources(
-				clientAddress: clientAddress,
-				timerIdentifier: timerIdentifier
-			)
+		if !Discord_ClientResult_Successful(result) {
+			var errorStr = Discord_String()
+			Discord_ClientResult_Error(result, &errorStr)
+			if let errorPtr = errorStr.ptr,
+				let messageStr = String(
+					bytes: UnsafeRawBufferPointer(
+						start: errorPtr,
+						count: Int(errorStr.size)
+					),
+					encoding: .utf8
+				)
+			{
+				manager.handleError("Authentication Error: \(messageStr)")
+			} else {
+				manager.handleError("Authentication failed with unknown error")
+			}
+			return
 		}
+
+		guard var verifier = manager.verifier else {
+			manager.handleError("❌ Authentication Error: No verifier available")
+			return
+		}
+
+		var verifierStr = Discord_String()
+		Discord_AuthorizationCodeVerifier_Verifier(&verifier, &verifierStr)
+
+		// Token exchange callback
+		let tokenCallback: Discord_Client_TokenExchangeCallback = {
+			result, token, refreshToken, tokenType, expiresIn, scope, userData in
+			let manager = Unmanaged<DiscordManager>.fromOpaque(userData!).takeUnretainedValue()
+
+			if let tokenPtr = token.ptr,
+				let refreshPtr = refreshToken.ptr,
+				let tokenStr = String(
+					bytes: UnsafeRawBufferPointer(start: tokenPtr, count: Int(token.size)),
+					encoding: .utf8),
+				let refreshStr = String(
+					bytes: UnsafeRawBufferPointer(start: refreshPtr, count: Int(refreshToken.size)),
+					encoding: .utf8)
+			{
+				print("🎟️ Received token from auth flow")
+
+				// Save token first
+				Task { @MainActor in
+					await manager.updateStoredToken(
+						accessToken: tokenStr,
+						refreshToken: refreshStr,
+						expiresIn: TimeInterval(expiresIn)
+					)
+
+					// Then update client token
+					print("🔑 Updating client with new token...")
+					let accessStr = manager.makeDiscordString(from: tokenStr)
+					Discord_Client_UpdateToken(
+						manager.client,
+						Discord_AuthorizationTokenType_Bearer,
+						token,
+						{ result, userData in
+							print("🔌 Connecting with new token...")
+							let manager = Unmanaged<DiscordManager>.fromOpaque(userData!)
+								.takeUnretainedValue()
+							Discord_Client_Connect(manager.client)
+						},
+						nil,
+						userData
+					)
+				}
+			}
+		}
+
+		Discord_Client_GetToken(
+			manager.client,
+			manager.applicationId,
+			code,
+			verifierStr,
+			redirectUri,
+			tokenCallback,
+			nil,
+			userData
+		)
 	}
 
 	deinit {
-		// Stop callbacks before cleanup
-		callbackFlag?.value = false
+		// Stop timer synchronously
+		updateTimer?.invalidate()
+		updateTimer = nil
 
-		let actor = CleanupActor()
+		// Clear state
+		currentPlaybackInfo = nil
+		lastTitle = ""
+		lastArtist = ""
+		lastArtwork = nil
+		lastDuration = 0
+		lastCurrentTime = 0
 
-		// Use unowned self to indicate we don't extend lifetime
-		Task { @MainActor [unowned self, actor] in
-			// Use static method to avoid capturing self in nested task
-			Self.performCleanup(for: self, with: actor)
+		// Clear client
+		if let client = client {
+			// Basic presence clear without callback
+			var activity = Discord_Activity()
+			Discord_Activity_Init(&activity)
+			Discord_Client_UpdateRichPresence(client, &activity, nil, nil, nil)
+
+			Discord_Client_Drop(client)
+			client.deallocate()
 		}
 	}
 }
