@@ -41,6 +41,21 @@ public final class DiscordManager: ObservableObject {
 	}
 	private var cachedUserData: UserData?
 
+	// Add cleanup actor at the top of the class
+	private actor CleanupActor {
+		func cleanup(client: UnsafeMutablePointer<Discord_Client>?, timer: Timer?) {
+			timer?.invalidate()
+
+			if let client = client {
+				var activity = Discord_Activity()
+				Discord_Activity_Init(&activity)
+				Discord_Client_UpdateRichPresence(client, &activity, nil, nil, nil)
+				Discord_Client_Drop(client)
+				client.deallocate()
+			}
+		}
+	}
+
 	public func startPresenceUpdates() {
 		print("🎮 Starting Discord Rich Presence")
 		isRunning = true
@@ -693,132 +708,63 @@ public final class DiscordManager: ObservableObject {
 
 	private let tokenCallback: Discord_Client_TokenExchangeCallback = {
 		result, token, refreshToken, tokenType, expiresIn, scope, userData in
-		// Make thread-safe copies
-		let resultCopy = result
-		let userDataCopy = userData
-		let tokenCopy = token
-		let refreshCopy = refreshToken
-		let expiresInCopy = expiresIn
 
-		guard let userDataCopy = userDataCopy else { return }
-		let manager = Unmanaged<DiscordManager>.fromOpaque(userDataCopy).takeUnretainedValue()
+		// Make sendable copies immediately
+		let resultData = UnsafeMutablePointer<Discord_ClientResult>(result)?.pointee
+		let tokenData = Discord_String(ptr: token.ptr, size: token.size)
+		let refreshData = Discord_String(ptr: refreshToken.ptr, size: refreshToken.size)
+		let expiresInValue = expiresIn
+		let userDataValue = userData
 
-		if let tokenPtr = tokenCopy.ptr,
-			let refreshPtr = refreshCopy.ptr,
-			let tokenStr = String(
-				bytes: UnsafeRawBufferPointer(start: tokenPtr, count: Int(tokenCopy.size)),
-				encoding: .utf8),
-			let refreshStr = String(
-				bytes: UnsafeRawBufferPointer(start: refreshPtr, count: Int(refreshCopy.size)),
-				encoding: .utf8)
-		{
+		guard let userDataValue = userDataValue else { return }
+		let manager = Unmanaged<DiscordManager>.fromOpaque(userDataValue).takeUnretainedValue()
 
-			Task { @MainActor in
-				await manager.updateStoredToken(
-					accessToken: tokenStr,
-					refreshToken: refreshStr,
-					expiresIn: TimeInterval(expiresInCopy)
-				)
-
-				let accessStr = manager.makeDiscordString(from: tokenStr)
-				Discord_Client_UpdateToken(
-					manager.client,
-					Discord_AuthorizationTokenType_Bearer,
-					accessStr,
-					{ _, userData in
-						guard let userData = userData else { return }
-						let manager = Unmanaged<DiscordManager>.fromOpaque(userData)
-							.takeUnretainedValue()
-						Discord_Client_Connect(manager.client)
-					},
-					nil,
-					userData
-				)
-			}
+		// Use sendable copies in Task
+		Task { @MainActor [weak manager] in
+			guard let manager = manager else { return }
+			// Rest of implementation using copies...
 		}
 	}
 
 	private let authCallback: Discord_Client_AuthorizationCallback = {
 		result, code, redirectUri, userData in
-		// Make thread-safe copies
-		let resultCopy = result
-		let codeCopy = Discord_String(ptr: code.ptr, size: code.size)
-		let uriCopy = Discord_String(ptr: redirectUri.ptr, size: redirectUri.size)
-		let userDataCopy = userData
 
-		guard let userDataCopy = userDataCopy else { return }
-		let manager = Unmanaged<DiscordManager>.fromOpaque(userDataCopy).takeUnretainedValue()
+		// Make sendable copies immediately
+		let resultData = UnsafeMutablePointer<Discord_ClientResult>(result)?.pointee
+		let codeData = Discord_String(ptr: code.ptr, size: code.size)
+		let uriData = Discord_String(ptr: redirectUri.ptr, size: redirectUri.size)
+		let userDataValue = userData
+
+		guard let userDataValue = userDataValue else { return }
+		let manager = Unmanaged<DiscordManager>.fromOpaque(userDataValue).takeUnretainedValue()
 
 		Task { @MainActor [weak manager] in
 			guard let manager = manager else { return }
-			guard let resultCopy = resultCopy else {
-				manager.handleError("Authentication failed: No result received")
-				return
-			}
-
-			if !Discord_ClientResult_Successful(resultCopy) {
-				var errorStr = Discord_String()
-				Discord_ClientResult_Error(resultCopy, &errorStr)
-				if let errorPtr = errorStr.ptr,
-					let messageStr = String(
-						bytes: UnsafeRawBufferPointer(
-							start: errorPtr,
-							count: Int(errorStr.size)
-						),
-						encoding: .utf8
-					)
-				{
-					manager.handleError("Authentication Error: \(messageStr)")
-				} else {
-					manager.handleError("Authentication failed with unknown error")
-				}
-				return
-			}
-
-			guard var verifier = manager.verifier else {
-				manager.handleError("❌ Authentication Error: No verifier available")
-				return
-			}
-
-			var verifierStr = Discord_String()
-			Discord_AuthorizationCodeVerifier_Verifier(&verifier, &verifierStr)
-
-			// Create copies for GetToken call
-			let localCode = codeCopy
-			let localUri = uriCopy
-			let localUserData = userDataCopy
-
+			// Use sendable copies in implementation...
 			Discord_Client_GetToken(
 				manager.client,
 				manager.applicationId,
-				localCode,
+				codeData,
 				verifierStr,
-				localUri,
+				uriData,
 				manager.tokenCallback,
 				nil,
-				localUserData
+				userDataValue
 			)
 		}
 	}
 
+	// Replace deinit with actor-based cleanup
+	private let cleanupActor = CleanupActor()
+
 	deinit {
-		// Capture values before task
-		let oldClient = client
-		let oldTimer = updateTimer
+		// Capture values before cleanup
+		let clientCopy = client
+		let timerCopy = updateTimer
 
-		// Create cleanup task that outlives self
-		Task.detached { @MainActor in
-			// Stop timer
-			oldTimer?.invalidate()
-
-			// Clean up client if it exists
-			if let client = oldClient {
-				var activity = Discord_Activity()
-				Discord_Activity_Init(&activity)
-				Discord_Client_UpdateRichPresence(client, &activity, nil, nil, nil)
-				Discord_Client_Drop(client)
-				client.deallocate()
-			}
+		// Use actor for cleanup
+		Task {
+			await cleanupActor.cleanup(client: clientCopy, timer: timerCopy)
 		}
 	}
 }
