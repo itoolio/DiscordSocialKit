@@ -740,12 +740,22 @@ public final class DiscordManager: ObservableObject {
 
 		Task { @MainActor [weak manager] in
 			guard let manager = manager else { return }
-
 			guard let resultData = resultData else {
 				manager.handleError("Authentication failed: No result received")
 				return
 			}
 
+			// Get verifier before any other async work
+			guard var verifier = manager.verifier else {
+				manager.handleError("❌ Authentication Error: No verifier available")
+				return
+			}
+
+			// Create verifier string first
+			var localVerifierStr = Discord_String()
+			Discord_AuthorizationCodeVerifier_Verifier(&verifier, &localVerifierStr)
+
+			// Rest of auth flow
 			if !Discord_ClientResult_Successful(resultData) {
 				var errorStr = Discord_String()
 				Discord_ClientResult_Error(result, &errorStr)
@@ -765,20 +775,11 @@ public final class DiscordManager: ObservableObject {
 				return
 			}
 
-			guard var verifier = manager.verifier else {
-				manager.handleError("❌ Authentication Error: No verifier available")
-				return
-			}
-
-			// Create verifier string locally
-			var verifierStr = Discord_String()
-			Discord_AuthorizationCodeVerifier_Verifier(&verifier, &verifierStr)
-
 			Discord_Client_GetToken(
 				manager.client,
 				manager.applicationId,
 				codeData,
-				verifierStr,
+				localVerifierStr,  // Use our local copy
 				uriData,
 				manager.tokenCallback,
 				nil,
