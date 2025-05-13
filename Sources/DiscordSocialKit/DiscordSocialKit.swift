@@ -823,9 +823,23 @@ public final class DiscordManager: ObservableObject {
 		Task { @MainActor [weak manager, authData] in
 			guard let manager = manager else { return }
 
-			// ...existing verifier code...
+			guard var verifier = manager.verifier else {
+				manager.handleError("❌ Authentication Error: No verifier available")
+				return
+			}
 
-			// Use userData from authData instead of capturing directly
+			var localVerifierStr = Discord_String()
+			Discord_AuthorizationCodeVerifier_Verifier(&verifier, &localVerifierStr)
+
+			if !authData.resultSuccess {
+				manager.handleError("Authentication failed")
+				return
+			}
+
+			// Create Discord strings from copied data
+			var codeStr = manager.makeDiscordString(from: authData.strings.code)
+			var uriStr = manager.makeDiscordString(from: authData.strings.uri)
+
 			Discord_Client_GetToken(
 				manager.client,
 				manager.applicationId,
@@ -848,20 +862,23 @@ public final class DiscordManager: ObservableObject {
 	}
 
 	deinit {
-		// Capture actor reference outside of task
-		let actor = CleanupActor()
+		// Get values we need before creating task
+		let clientAddress: UInt?
+		let timerIdentifier: ObjectIdentifier?
 
-		// Schedule MainActor work to capture isolated values safely
-		Task { @MainActor in
-			let cleanupData = prepareCleanupData()
+		// Access MainActor-isolated values directly in deinit because we're already on MainActor
+		clientAddress = client.map { UInt(bitPattern: $0) }
+		timerIdentifier = updateTimer.map { ObjectIdentifier($0) }
 
-			// Pass captured data to detached task
-			Task.detached {
-				await actor.cleanupResources(
-					clientAddress: cleanupData.clientAddress,
-					timerIdentifier: cleanupData.timerIdentifier
-				)
-			}
+		// Create actor outside of task
+		let cleanupActor = CleanupActor()
+
+		// Create a detached task with captured values (not self)
+		Task.detached { [clientAddress, timerIdentifier, cleanupActor] in
+			await cleanupActor.cleanupResources(
+				clientAddress: clientAddress,
+				timerIdentifier: timerIdentifier
+			)
 		}
 	}
 }
