@@ -754,7 +754,7 @@ public final class DiscordManager: ObservableObject {
 			init?(
 				token: Discord_String,
 				refreshToken: Discord_String,
-				expiresIn: UInt32,
+				expiresIn: Int32,
 				userData: UnsafeMutableRawPointer?
 			) {
 				guard let userData = userData,
@@ -773,7 +773,7 @@ public final class DiscordManager: ObservableObject {
 
 				self.accessToken = tokenStr
 				self.refreshToken = refreshStr
-				self.expiresIn = TimeInterval(expiresIn)
+				self.expiresIn = TimeInterval(expiresIn)  // Convert Int32 to TimeInterval
 				self.userDataPointer = UInt(bitPattern: userData)
 			}
 
