@@ -12,23 +12,20 @@ internal import MusadoraKit
 import SwiftData
 import discord_partner_sdk
 
-// Timer handling extensions
 extension Timer {
-	fileprivate static var currentTimers: [Timer] {
-		// Get timers from all common modes
+	fileprivate static func currentTimers() -> [Timer] {
+		// Get timers from the main run loop
 		let modes = [RunLoop.Mode.common, .default, .tracking]
 		return modes.flatMap { mode in
-			RunLoop.main.scheduledTimers(forMode: mode)
+			RunLoop.main.scheduledTimers(mode)
 		}
 	}
 }
 
 extension RunLoop {
-	fileprivate func scheduledTimers(forMode mode: RunLoop.Mode) -> [Timer] {
-		guard let modeObj = CFRunLoopCopyAllTimers(getCFRunLoop(), mode.cf) else {
-			return []
-		}
-		return (modeObj.takeRetainedValue() as! [Timer])
+	fileprivate func scheduledTimers(_ mode: RunLoop.Mode) -> [Timer] {
+		// Get current run loop's timers
+		return mode == .common ? self.scheduledTimers : []
 	}
 }
 
@@ -62,7 +59,7 @@ public final class DiscordManager: ObservableObject {
 	}
 	private var cachedUserData: UserData?
 
-	// Update CleanupActor to be Sendable
+	// Update cleanup actor implementation
 	private actor CleanupActor: @unchecked Sendable {
 		struct Context: Sendable {
 			let clientAddress: UInt?
@@ -74,17 +71,17 @@ public final class DiscordManager: ObservableObject {
 			}
 		}
 
-		private func cleanupTimer(_ timer: Timer?) async {
+		func cleanupTimer(_ timer: Timer?) async {
 			await MainActor.run {
 				timer?.invalidate()
 			}
 		}
 
-		private func cleanup(_ context: Context) async {
+		func cleanup(_ context: Context) async {
 			// Handle timer cleanup on main thread
 			if let timerIdentity = context.timerIdentity {
 				await MainActor.run {
-					Timer.currentTimers.first { timer in
+					Timer.currentTimers().first { timer in
 						ObjectIdentifier(timer) == timerIdentity
 					}?.invalidate()
 				}
