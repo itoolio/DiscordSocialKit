@@ -402,7 +402,7 @@ public final class DiscordManager: ObservableObject {
 		Discord_Activity_Init(&activity)
 
 		// Set activity type first
-		Discord_Activity_SetType(&activity, Discord_ActivityTypes_Listening)
+		Discord_Activity_SetType(&activity, 2)
 
 		// Set up asset
 		var assets = Discord_ActivityAssets()
